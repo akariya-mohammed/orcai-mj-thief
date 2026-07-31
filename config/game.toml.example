@@ -1,0 +1,35 @@
+# PRIVATE, per-peer config. Copy to config/game.toml (which is NOT shared)
+# and fill in YOUR values. Never negotiated with the opponent; may differ per side.
+# Values here NEVER weaken a signed condition in config/game.json — game.json wins.
+version = "1.10"
+
+[game]
+group_name   = "My-Team"
+group_id     = "my-team"            # 8-char unique group code (no spaces) goes on the PDF
+sub_game_number = 1
+members      = ["id-1001", "id-1002"]
+repos = { cop = "https://github.com/you/cop-repo", thief = "https://github.com/you/thief-repo" }
+
+[network]
+my_port              = 8802                          # MY FastMCP server port
+opponent_url         = "http://127.0.0.1:8801/mcp"   # the ONLY thing I know about the opponent
+turn_timeout_seconds = 180
+
+# [strategy] -- optional: point at YOUR brain subclass (else the shipped heuristic runs)
+# thief_class  = "police_thief.strategy.my_brain:MyThiefBrain"
+# police_class = "police_thief.strategy.my_brain:MyPoliceBrain"
+
+# [trash_talk] -- optional: HOW the banter is produced. The MOVE is ALWAYS pure Python (Rule 25).
+# provider = "template"   # template (0 tokens, default) | ollama | claude_api | claude_cli
+# every_n_steps = 2       # only invoke the model every N turns to cut token spend
+
+# [belief] -- optional: MY private belief tuning (not shared, not signed)
+# smell_trust_weight = 4.0        # how strongly to trust scent evidence (reference default)
+
+[llm]
+model = "claude-opus-4-8[1m]"   # MY choice; the opponent may differ
+step_deadline_seconds = 30       # hard cap on LLM thinking per step
+
+[email]
+recipient = "rmisegal+uoh26finalgame@gmail.com"   # lecturer report address (mandatory, Rule 51)
+mode = "draft"

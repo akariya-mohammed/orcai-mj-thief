@@ -1,0 +1,30 @@
+# ── SECRETS — Rules 39 & 40: never commit these, ever ──────────────
+# A secret pushed once is compromised forever, even if deleted later.
+credentials.json
+token.json
+config/**/token.json
+config/**/credentials.json
+*.secret
+.env
+
+# ── Python ─────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# ── Runtime artifacts (regenerated per match) ──────────────────────
+logs/
+*.log
+outbox/
+artifacts/
+
+# ── OS / editor noise ──────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
