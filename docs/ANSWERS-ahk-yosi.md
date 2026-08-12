@@ -48,6 +48,10 @@ reported by exactly one side each:
   at ≥ 35 of its own steps;
 * your thief's `captured_event` confession (rule #46/#47) is understood and
   ends the sub-game as capture / police;
+* our thief confesses rule #46/#47 captures with an unprompted truthful
+  `claim_response={"claim":[r,c],"caught":true}` on its final message — your
+  bridge already accepts this as an unsealed answer and ends the sub-game as
+  capture / police (verified against your public peer);
 * a barrier-capture ending your engine records on receive (cause
   "barrier onto (r,c)") has no turn-message channel in this dialect — we treat
   your `submit_audit` package's `result_claim` as the terminal signal, so both
