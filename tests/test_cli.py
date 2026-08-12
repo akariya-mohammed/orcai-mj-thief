@@ -14,6 +14,12 @@ def test_selftest_runs_and_succeeds(capsys):
 def test_peer_without_fastmcp_exits_cleanly(capsys):
     # peer is WIRED as of 5.3; without the dependency installed it must fail
     # with a clear instruction, never a traceback.
+    try:
+        import fastmcp  # noqa: F401
+    except ImportError:
+        pass
+    else:
+        pytest.skip("fastmcp installed — the peer starts for real here")
     assert main(["peer", "--role", "police", "--turns", "1"]) == 2
     assert "uv sync" in capsys.readouterr().err
 

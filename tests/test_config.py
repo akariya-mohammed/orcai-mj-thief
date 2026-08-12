@@ -70,6 +70,7 @@ def test_binding_minimum_enforced():
 
 
 def test_load_reads_repo_defaults_without_private_file(tmp_path, monkeypatch):
-    monkeypatch.chdir("c:/ai orc/final-project")
+    from pathlib import Path
+    monkeypatch.chdir(Path(__file__).resolve().parents[1])   # repo root
     cfg = Config.load()                                 # game.toml absent -> shared only
     assert cfg.get("board.size") == 7
