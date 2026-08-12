@@ -8,7 +8,7 @@ BOOK_DEFAULTS = {"grid_size": 7, "cop_start": (0, 0), "thief_start": (3, 3)}
 
 #: Constitution agreed with Team ahk-yosi — canonical-JSON SHA-256 of game.json.
 AGREED_CONFIG_SHA256 = \
-    "3835f6a137620d8d98ab3925b2d1ed397d2d20d23bb9ba857bcd104284aac443"
+    "fef1fe3a229b0c7daece9f1e3ebe7a097a7207e6ac0628b6c67050595a6101be"
 
 
 def cmd_interop(args) -> int:
@@ -42,6 +42,13 @@ def cmd_interop(args) -> int:
                 not json.loads(gate.read_text(encoding="utf-8")).get("passed"):
             print(f"counted mode requires a passed friendly gate at {gate}")
             return 2
+        if not Path("credentials.json").exists():
+            print("counted mode requires credentials.json — download from Google "
+                  "Cloud Console and run: police-thief authorize")
+            return 2
+        if not Path("token.json").exists():
+            print("counted mode requires token.json — run: police-thief authorize")
+            return 2
     my_port = args.my_port or (8801 if args.role == "police" else 8802)
     peer = ReferenceSeriesPeer(
         natural_role=args.role, config=cfg, opponent_url=args.opponent_url,
@@ -52,13 +59,46 @@ def cmd_interop(args) -> int:
         mcp_url=args.mcp_url)
     peer.start_server()
     result = peer.run_series()
-    passed = result["all_audits_verified"] and \
-        result["num_sub_games"] == args.games
+    passed = result["all_audits_verified"] and result["num_sub_games"] == args.games
+    if args.mode == "counted":
+        rpt = result.get("report_status", {})
+        rpt_status = rpt.get("status", "unknown")
+        if rpt_status != "sent":
+            print(json.dumps({"mode": args.mode, "passed": False,
+                              "report_status": rpt_status,
+                              "error": rpt.get("error") or "email not sent",
+                              "totals": result["totals"],
+                              "series_winner": result["series_winner"]}))
+            return 1
     print(json.dumps({"mode": args.mode, "passed": passed,
                       "totals": result["totals"],
                       "series_winner": result["series_winner"],
                       "result_sha256": result["result_sha256"]}))
     return 0 if passed else 1
+
+
+def cmd_authorize(credentials_path: str = "credentials.json",
+                  token_path: str = "token.json") -> int:
+    """Interactive OAuth consent — run once to create token.json for counted matches."""
+    cpath = Path(credentials_path)
+    if not cpath.exists():
+        print(f"credentials.json not found at {cpath.resolve()}")
+        print("Get it from: Google Cloud Console → APIs & Services → Credentials "
+              "→ Create OAuth 2.0 Client ID (Desktop App) → Download JSON")
+        return 1
+    from police_thief.infra.email_sender import SCOPES
+    try:
+        from google_auth_oauthlib.flow import InstalledAppFlow
+    except ImportError:
+        print("google-auth-oauthlib not installed — run: uv sync")
+        return 1
+    flow = InstalledAppFlow.from_client_secrets_file(str(cpath), SCOPES)
+    creds = flow.run_local_server(
+        port=0, open_browser=True,
+        authorization_prompt_message="Open this URL to authorize Gmail send:\n{url}")
+    Path(token_path).write_text(creds.to_json(), encoding="utf-8")
+    print(f"token.json written — Gmail gmail.send scope authorized")
+    return 0
 
 
 def _load_board_config() -> dict:

@@ -55,6 +55,9 @@ def main(argv: list[str] | None = None) -> int:
     p_interop.add_argument("--mcp-url", default=None,
                            help="our public /mcp URL, for the identity block")
 
+    sub.add_parser("authorize",
+                   help="one-time Gmail OAuth consent → writes token.json")
+
     p_series = sub.add_parser("series", help="run a local self-play series -> 4 artifacts")
     p_series.add_argument("--games", type=int, default=None)
     p_series.add_argument("--seed", type=int, default=1)
@@ -113,6 +116,9 @@ def main(argv: list[str] | None = None) -> int:
         verdict, detail = verify_log(load_log(args.log))
         print(f"{verdict} — {detail}")
         return 0 if verdict == VERIFIED else 1
+    if args.command == "authorize":
+        from police_thief.cli_cmds import cmd_authorize
+        return cmd_authorize()
     return 2
 
 

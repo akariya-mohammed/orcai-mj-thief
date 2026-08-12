@@ -31,7 +31,7 @@ from police_thief.interop.series import (
 )
 from police_thief.shared.config import Config
 
-AGREED_SHA = "3835f6a137620d8d98ab3925b2d1ed397d2d20d23bb9ba857bcd104284aac443"
+AGREED_SHA = "fef1fe3a229b0c7daece9f1e3ebe7a097a7207e6ac0628b6c67050595a6101be"
 
 GOLDEN_PAYLOAD = {"kind": "step", "role": "police", "sub_game": 1, "step": 1,
                   "position": [1, 0], "move": "MOVE:S", "barrier": None,
@@ -472,21 +472,22 @@ def test_friendly_never_constructs_email_sender(monkeypatch):
 
 
 def test_counted_mode_reaches_for_the_sender(monkeypatch, tmp_path):
-    """COUNTED is the only path that touches the email module."""
+    """COUNTED with verified audits is the only path that touches the email module."""
     import sys
 
     monkeypatch.setitem(sys.modules, "police_thief.infra.email_sender", None)
     peer = _peer(mode="counted", out_dir=str(tmp_path))
     with pytest.raises(ImportError):
-        peer.dispatch_report({"series_winner": "police"})
+        peer.dispatch_report({"series_winner": "police", "all_audits_verified": True})
 
 
 def test_friendly_artifacts_are_labeled(tmp_path):
     peer = _peer(out_dir=str(tmp_path))
     result = peer.build_result()
     assert result["match_mode"] == "FRIENDLY (UNCOUNTED)"
-    on_disk = json.loads((tmp_path / "result_police.json")
-                         .read_text(encoding="utf-8"))
+    # game_id computed from identity (orcai-mj) vs empty their_identity (opponent)
+    result_file = tmp_path / f"result_{result['game_id']}.json"
+    on_disk = json.loads(result_file.read_text(encoding="utf-8"))
     assert on_disk["match_mode"] == "FRIENDLY (UNCOUNTED)"
     assert on_disk["result_sha256"] == result["result_sha256"]
 
@@ -495,6 +496,7 @@ def test_result_digest_is_canonical_and_reproducible(tmp_path):
     peer = _peer(out_dir=str(tmp_path))
     result = peer.build_result()
     claimed = result.pop("result_sha256")
+    result.pop("report_status", None)  # post-sha256 metadata; not in the digest
     assert digest(result) == claimed
 
 

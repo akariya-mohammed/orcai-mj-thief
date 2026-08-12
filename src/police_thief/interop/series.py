@@ -24,6 +24,7 @@ from pathlib import Path
 from police_thief.domain.belief import BeliefGrid
 from police_thief.domain.board import Board
 from police_thief.domain.brains import Decision, MoveType
+from police_thief.domain.game_ids import make_game_id, make_game_uid
 from police_thief.domain.own_state import OwnGameState
 from police_thief.domain.smell import ScentGrid
 from police_thief.exceptions import ProtocolViolation
@@ -43,6 +44,7 @@ CAPTURE, SURVIVAL, TECHNICAL_LOSS = "capture", "survival", "technical_loss"
 
 FRIENDLY, COUNTED = "friendly", "counted"
 FRIENDLY_LABEL = "FRIENDLY (UNCOUNTED)"
+SCHEMA_VERSION = "1.2"
 
 AUDIT_WAIT = 20.0          # their REHANDSHAKE_AUDIT_WAIT
 AGREEMENT_WAIT = 60.0      # their re-negotiate window
@@ -324,6 +326,10 @@ class ReferenceSeriesPeer:
         self.their_identity: dict = {}
         self.rows: list[dict] = []
         self._server_thread = None
+        # Computed after initial negotiation (game_id requires both group IDs)
+        self.game_id: str = ""
+        self.game_uid: str = ""
+        self.game_started_at: str = ""
 
     # -- lifecycle -------------------------------------------------------------
     def start_server(self) -> None:
@@ -511,31 +517,178 @@ class ReferenceSeriesPeer:
     def _write_log(self, engine: SubGame, n: int, row: dict,
                    theirs: dict | None, started_at: str) -> None:
         self.out_dir.mkdir(parents=True, exist_ok=True)
+        ended_at = datetime.now(UTC).isoformat()
+        try:
+            t1 = datetime.fromisoformat(started_at)
+            t2 = datetime.fromisoformat(ended_at)
+            duration = round((t2 - t1).total_seconds(), 2)
+        except Exception:
+            duration = 0.0
+
+        our_repos = self.identity.get("repos", {})
+        their_repos = self.their_identity.get("repos", {})
+        links: dict = {}
+        for k, v in (our_repos or {}).items():
+            links[f"group_1_repo_{k}"] = v
+        for k, v in (their_repos or {}).items():
+            links[f"group_2_repo_{k}"] = v
+
+        summary = {
+            "sub_game_number": n,
+            "group_id": self.identity.get("group_id", ""),
+            "role": engine.my_role,
+            "opponent_group_id": self.their_identity.get("group_id", ""),
+            "result": row["ending"],
+            "winner_role": row["winner"],
+            "steps": row["step"],
+            "timezone": "UTC",
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "duration_seconds": duration,
+            "tokens_total": 0,
+            "audit": row["audit_of_opponent"],
+        }
+        mutual_agreement = {
+            "opponent_group_id": self.their_identity.get("group_id", ""),
+            "result_claim": (theirs or {}).get("result_claim", ""),
+            "confirmed": row["audit_of_opponent"].startswith("Verified OK"),
+        }
         log = {
+            "_schema": "police_thief_p2p_log_v1.2",
+            "schema_version": SCHEMA_VERSION,
+            "game_id": self.game_id,
+            "game_uid": self.game_uid,
+            "links": links,
+            "summary": summary,
+            "records": engine.records,
+            "mutual_agreement": mutual_agreement,
+            # extended fields for internal audit/replay
             "match_mode": FRIENDLY_LABEL if self.mode == FRIENDLY else "COUNTED",
             "dialect": "reference",
             "sub_game": n, "my_role": engine.my_role,
             "config_sha256": digest(self.config.shared),
-            "started_at": started_at,
-            "ended_at": datetime.now(UTC).isoformat(),
-            "summary": row,
-            "my_records": engine.records,
+            "row": row,
             "my_scent_history": [wire.scent_to_wire(s)
                                  for s in engine.my_scent_history],
             "opponent_records": (theirs or {}).get("records", []),
             "opponent_result_claim": (theirs or {}).get("result_claim"),
         }
-        path = self.out_dir / f"log_{self.natural_role}_g{n:02d}.json"
+        fname = (f"log_{self.game_id}_g{n:02d}.json" if self.game_id
+                 else f"log_{self.natural_role}_g{n:02d}.json")
+        path = self.out_dir / fname
         path.write_text(json.dumps(log, indent=2, ensure_ascii=False),
                         encoding="utf-8")
 
+    # -- official artifacts --------------------------------------------------
+    def _links_dict(self) -> dict:
+        our_repos = self.identity.get("repos", {})
+        their_repos = self.their_identity.get("repos", {})
+        links: dict = {}
+        for k, v in (our_repos or {}).items():
+            links[f"group_1_repo_{k}"] = v
+        for k, v in (their_repos or {}).items():
+            links[f"group_2_repo_{k}"] = v
+        return links
+
+    def _write_declaration(self) -> None:
+        """Write declaration_{game_id}.json before the first sub-game."""
+        from police_thief.shared.sysinfo import hardware_spec as get_hw
+        our_id = self.identity
+        their_id = self.their_identity
+        declaration = {
+            "_schema": "police_thief_p2p_declaration_v1.2",
+            "schema_version": SCHEMA_VERSION,
+            "declaration_type": "pre_game_declaration",
+            "game_id": self.game_id,
+            "game_uid": self.game_uid,
+            "links": self._links_dict(),
+            "timezone": "UTC",
+            "game_started_at": self.game_started_at,
+            "game_ended_at": "",  # filled in build_result()
+            "num_sub_games": self.num_games,
+            "max_tokens_per_game": self.config.get(
+                "network_and_league.token_budget_per_series", 200000),
+            "groups": {
+                "group_1": {
+                    "group_id": our_id.get("group_id", ""),
+                    "group_name": our_id.get("group_name", ""),
+                    "members": our_id.get("members", []),
+                    "repos": our_id.get("repos", {}),
+                    "mcp_servers": our_id.get("mcp_servers", {}),
+                    "llm_model": our_id.get("llm_model", "template"),
+                    "hardware_spec": get_hw(),
+                },
+                "group_2": {
+                    "group_id": their_id.get("group_id", ""),
+                    "group_name": their_id.get("group_name", ""),
+                    "members": their_id.get("members", []),
+                    "repos": their_id.get("repos", {}),
+                    "mcp_servers": their_id.get("mcp_servers", {}),
+                    "llm_model": their_id.get("llm_model", "unknown"),
+                    "hardware_spec": {},
+                },
+            },
+        }
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        path = self.out_dir / f"declaration_{self.game_id}.json"
+        path.write_text(json.dumps(declaration, indent=2, ensure_ascii=False),
+                        encoding="utf-8")
+        self.log(f"[{self.natural_role}] declaration written → {path.name}")
+
+    def _write_config_artifact(self, n: int) -> None:
+        """Write config_{game_id}_g{NN}.json — the agreed terms for sub-game n."""
+        shared = self.config.shared
+        config_sha256 = digest(shared)
+        artifact: dict = {"_schema": "police_thief_p2p_config_v1.2"}
+        for key in ("agreed_between", "board_and_agents",
+                    "world", "movement_and_barriers", "scoring", "pheromones",
+                    "network_and_league", "rate_limiter_gatekeeper"):
+            if key in shared:
+                artifact[key] = shared[key]
+        artifact.update({
+            "schema_version": SCHEMA_VERSION,
+            "game_id": self.game_id,
+            "game_uid": self.game_uid,
+            "sub_game_number": n,
+            "links": self._links_dict(),
+            "config_name": f"{self.game_id}-g{n:02d}",
+            "config_sha256": config_sha256,
+        })
+        fname = (f"config_{self.game_id}_g{n:02d}.json" if self.game_id
+                 else f"config_{self.natural_role}_g{n:02d}.json")
+        path = self.out_dir / fname
+        path.write_text(json.dumps(artifact, indent=2, ensure_ascii=False),
+                        encoding="utf-8")
+
+    def _update_declaration_end(self, game_ended_at: str) -> None:
+        if not self.game_id:
+            return
+        path = self.out_dir / f"declaration_{self.game_id}.json"
+        if not path.exists():
+            return
+        try:
+            declaration = json.loads(path.read_text(encoding="utf-8"))
+            declaration["game_ended_at"] = game_ended_at
+            path.write_text(json.dumps(declaration, indent=2, ensure_ascii=False),
+                            encoding="utf-8")
+        except Exception:
+            pass
+
     # -- series --------------------------------------------------------------
     def run_series(self) -> dict:
+        self.game_started_at = datetime.now(UTC).isoformat()
         if not self.wait_for_opponent():
             raise LinkError("opponent never came up")
         ok, reason = self.negotiate_boundary(1)
         if not ok:
             raise LinkError(f"initial negotiation failed: {reason}")
+        # Compute game_id once both identities are known
+        our_group = self.identity.get("group_id", "orcai-mj")
+        their_group = self.their_identity.get("group_id", "opponent")
+        self.game_id = make_game_id(our_group, their_group)
+        self.game_uid = make_game_uid(our_group, their_group, digest(self.config.shared))
+        self.log(f"[{self.natural_role}] game_id={self.game_id} uid={self.game_uid}")
+        self._write_declaration()
         self.log(f"[{self.natural_role}] agreement verified with "
                  f"{self.their_identity.get('group_id', 'opponent')}")
         for n in range(1, self.num_games + 1):
@@ -543,49 +696,123 @@ class ReferenceSeriesPeer:
         return self.build_result()
 
     def build_result(self) -> dict:
+        # Compute game_id lazily when build_result is called without run_series
+        if not self.game_id:
+            our_group = self.identity.get("group_id", "orcai-mj")
+            their_group = self.their_identity.get("group_id", "opponent")
+            self.game_id = make_game_id(our_group, their_group)
+            self.game_uid = make_game_uid(our_group, their_group,
+                                          digest(self.config.shared))
+
         police_total = sum(r["police_score"] for r in self.rows)
         thief_total = sum(r["thief_score"] for r in self.rows)
         winner = POLICE if police_total > thief_total else \
             THIEF if thief_total > police_total else "tie"
-        clean = all(r["ending"] in (CAPTURE, SURVIVAL)
-                    and r["audit_of_opponent"].startswith("Verified OK")
-                    for r in self.rows)
+        # All audits verified + all outgoing audits delivered + no protocol violations
+        clean = all(
+            r["ending"] in (CAPTURE, SURVIVAL)
+            and r["audit_of_opponent"].startswith("Verified OK")
+            and r.get("audit_delivered", True)
+            and not r.get("protocol_violations")
+            for r in self.rows
+        )
+        game_ended_at = datetime.now(UTC).isoformat()
+        our_id = self.identity
+        their_id = self.their_identity
+        links = self._links_dict()
+
         body = {
-            "report_type": "game_result",
+            # spec-required fields
+            "_schema": "police_thief_p2p_result_v1.2",
+            "schema_version": SCHEMA_VERSION,
+            "report_type": "final_game_result",
+            "game_id": self.game_id,
+            "game_uid": self.game_uid,
+            "links": links,
+            "timezone": "UTC",
+            "groups": {
+                "group_1": {k: our_id.get(k) for k in
+                            ("group_id", "group_name", "members", "repos")},
+                "group_2": {k: their_id.get(k) for k in
+                            ("group_id", "group_name", "members", "repos")},
+            },
+            "num_sub_games": len(self.rows),
+            "sub_games": self.rows,
+            "final_result": {
+                "winner": winner,
+                "totals": {"police": police_total, "thief": thief_total},
+                "all_audits_verified": clean,
+                "tokens_total_series": 0,
+            },
+            "mutual_agreement": {"sha256": "", "confirmed": clean},
+            # internal fields kept for backward compatibility and dispatch_report
             "match_mode": FRIENDLY_LABEL if self.mode == FRIENDLY else "COUNTED",
             "dialect": "reference",
             "config_sha256": digest(self.config.shared),
-            "generated_at": datetime.now(UTC).isoformat(),
-            "my_group": {k: self.identity.get(k) for k in
+            "generated_at": game_ended_at,
+            "my_group": {k: our_id.get(k) for k in
                          ("group_id", "group_name", "members", "repos")},
-            "opponent_group": {k: self.their_identity.get(k) for k in
+            "opponent_group": {k: their_id.get(k) for k in
                                ("group_id", "group_name", "members", "repos")},
             "natural_role": self.natural_role,
-            "sub_games": self.rows,
             "totals": {"police": police_total, "thief": thief_total},
             "series_winner": winner,
-            "num_sub_games": len(self.rows),
             "all_audits_verified": clean,
         }
         body["result_sha256"] = digest(body)
+
         self.out_dir.mkdir(parents=True, exist_ok=True)
-        path = self.out_dir / f"result_{self.natural_role}.json"
+
+        # Write one config artifact per sub-game
+        for n in range(1, self.num_games + 1):
+            self._write_config_artifact(n)
+
+        # Update declaration with the end timestamp
+        self._update_declaration_end(game_ended_at)
+
+        result_name = (f"result_{self.game_id}.json" if self.game_id
+                       else f"result_{self.natural_role}.json")
+        path = self.out_dir / result_name
         path.write_text(json.dumps(body, indent=2, ensure_ascii=False),
                         encoding="utf-8")
         report = self.dispatch_report(body)
+        body["report_status"] = report
         self.log(f"[{self.natural_role}] series done: totals={body['totals']} "
                  f"winner={winner} report={report['status']}")
         return body
 
     # -- reporting: the friendly/counted hard wall -----------------------------
     def dispatch_report(self, result: dict) -> dict:
-        """FRIENDLY mode structurally cannot send email: the sender is never
-        constructed and this is the only reporting call site in the series."""
+        """FRIENDLY mode structurally cannot send email. Counted sends only when
+        all audits pass and the report has not already been sent (sentinel guard)."""
         if self.mode != COUNTED:
             return {"status": "suppressed (friendly mode — no email, no report)"}
+        if not result.get("all_audits_verified"):
+            return {"status": "suppressed (audit failures — all audits must pass)"}
+        sentinel = self.out_dir / f"report_sent_{self.natural_role}.lock"
+        if sentinel.exists():
+            return {"status": "duplicate_suppressed", "sentinel": str(sentinel)}
         from police_thief.infra.email_sender import GmailSender  # lazy
-
-        summary = {"game_id": f"interop-{self.identity.get('group_id')}",
-                   "winner": result["series_winner"]}
-        path = self.out_dir / f"result_{self.natural_role}.json"
-        return GmailSender(self.config).send_series_report({"result": path}, summary)
+        game_id = self.game_id or f"interop-{self.identity.get('group_id', 'unknown')}"
+        summary = {"game_id": game_id, "winner": result["series_winner"]}
+        artifact_paths: dict = {}
+        # Declaration
+        decl = self.out_dir / f"declaration_{game_id}.json"
+        if decl.exists():
+            artifact_paths["declaration"] = decl
+        # Config artifacts (one per sub-game)
+        for cfg_path in sorted(self.out_dir.glob(f"config_{game_id}_g*.json")):
+            artifact_paths[cfg_path.stem] = cfg_path
+        # Log artifacts (one per sub-game)
+        for log_path in sorted(self.out_dir.glob(f"log_{game_id}_g*.json")):
+            artifact_paths[log_path.stem] = log_path
+        # Result
+        result_path = self.out_dir / f"result_{game_id}.json"
+        if result_path.exists():
+            artifact_paths["result"] = result_path
+        sender = GmailSender(self.config)
+        sender.mode = "send"  # counted always sends, never drafts
+        report = sender.send_series_report(artifact_paths, summary)
+        if report.get("status") == "sent":
+            sentinel.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
+        return report

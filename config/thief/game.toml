@@ -3,8 +3,13 @@ version = "1.0"
 
 [game]
 group_name = "Orcai-MJ"
-group_id = "orcai-mj-thief"
+group_id = "orcai-mj"
+members = ["325233633", "211862024"]
 seed = 1000
+
+[game.repos]
+cop = "https://github.com/akariya-mohammed/orcai-mj-cop"
+thief = "https://github.com/akariya-mohammed/orcai-mj-thief"
 
 [network]
 my_port = 8802
