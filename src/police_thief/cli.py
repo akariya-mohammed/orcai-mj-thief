@@ -9,9 +9,8 @@ Commands:
 from __future__ import annotations
 
 import argparse
-import json
 import sys
-from pathlib import Path
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="police-thief",
@@ -36,6 +35,26 @@ def main(argv: list[str] | None = None) -> int:
     p_self.add_argument("--games", type=int, default=18)
     p_self.add_argument("--seed", type=int, default=1)
 
+    p_interop = sub.add_parser(
+        "interop", help="reference-dialect networked series (six sub-games)")
+    p_interop.add_argument("--role", required=True, choices=["police", "thief"],
+                           help="this peer's NATURAL role (alternates per sub-game)")
+    p_interop.add_argument("--opponent-url", required=True,
+                           help="the opponent's /mcp endpoint")
+    p_interop.add_argument("--my-port", type=int, default=None)
+    p_interop.add_argument("--games", type=int, default=6)
+    p_interop.add_argument("--mode", choices=["friendly", "counted"],
+                           default="friendly")
+    p_interop.add_argument("--out", default="artifacts/interop")
+    p_interop.add_argument("--seed", type=int, default=0)
+    p_interop.add_argument("--turn-timeout", type=float, default=180.0)
+    p_interop.add_argument("--no-alternate-roles", action="store_true")
+    p_interop.add_argument("--no-handshake-per-sub-game", action="store_true")
+    p_interop.add_argument("--config", default=None,
+                           help="private toml (default: config/<role>/game.toml)")
+    p_interop.add_argument("--mcp-url", default=None,
+                           help="our public /mcp URL, for the identity block")
+
     p_series = sub.add_parser("series", help="run a local self-play series -> 4 artifacts")
     p_series.add_argument("--games", type=int, default=None)
     p_series.add_argument("--seed", type=int, default=1)
@@ -51,8 +70,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_selftest_scent(args.games, args.seed)
         return cmd_selftest(args.steps)
     if args.command == "series":
-        from police_thief.shared.config import Config
         from police_thief.sdk.series import SeriesRunner
+        from police_thief.shared.config import Config
         cfg = Config.load(private_path="config/police/game.toml")
         summary = SeriesRunner(cfg, out_dir=args.out).run(num_games=args.games,
                                                           seed=args.seed)
@@ -60,15 +79,19 @@ def main(argv: list[str] | None = None) -> int:
               f"winner={summary['winner']} -> artifacts in {summary['out_dir']}")
         if args.email:
             from pathlib import Path
+
             from police_thief.domain.game_ids import artifact_filenames
             from police_thief.infra.email_sender import GmailSender
             names = artifact_filenames(summary["game_id"], 1)
             paths = {k: Path(summary["out_dir"]) / v for k, v in names.items()}
             print(f"email: {GmailSender(cfg).send_series_report(paths, summary)}")
         return 0
+    if args.command == "interop":
+        from police_thief.cli_cmds import cmd_interop
+        return cmd_interop(args)
     if args.command == "peer":
-        from police_thief.shared.config import Config
         from police_thief.peer.runner import PeerProcess
+        from police_thief.shared.config import Config
         private = args.config or f"config/{args.role}/game.toml"
         process = PeerProcess(args.role, Config.load(private_path=private))
         try:
@@ -86,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         return 0
     if args.command == "replay":
-        from police_thief.gui.replay_data import load_log, verify_log, VERIFIED
+        from police_thief.gui.replay_data import VERIFIED, load_log, verify_log
         verdict, detail = verify_log(load_log(args.log))
         print(f"{verdict} — {detail}")
         return 0 if verdict == VERIFIED else 1

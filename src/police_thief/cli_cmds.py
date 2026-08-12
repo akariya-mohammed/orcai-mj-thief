@@ -4,8 +4,61 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-
 BOOK_DEFAULTS = {"grid_size": 7, "cop_start": (0, 0), "thief_start": (3, 3)}
+
+#: Constitution agreed with Team ahk-yosi — canonical-JSON SHA-256 of game.json.
+AGREED_CONFIG_SHA256 = \
+    "3835f6a137620d8d98ab3925b2d1ed397d2d20d23bb9ba857bcd104284aac443"
+
+
+def cmd_interop(args) -> int:
+    """Run the reference-dialect networked series (friendly by default).
+
+    Counted mode is triple-gated: the flag itself, an explicit environment
+    confirmation, and a friendly-gate file the launcher writes only after a
+    fully verified friendly — so an official report can never go out by
+    accident (Rules 30/51).
+    """
+    import os
+
+    from police_thief.interop.refcrypto import digest
+    from police_thief.interop.series import ReferenceSeriesPeer
+    from police_thief.shared.config import Config
+
+    private = args.config or f"config/{args.role}/game.toml"
+    cfg = Config.load(private_path=private)
+    actual = digest(cfg.shared)
+    if actual != AGREED_CONFIG_SHA256:
+        print(f"REFUSING TO PLAY: config/game.json canonical SHA-256 is {actual}, "
+              f"agreed constitution is {AGREED_CONFIG_SHA256}")
+        return 2
+    if args.mode == "counted":
+        if os.environ.get("P2P_CONFIRM_COUNTED") != "YES":
+            print("counted mode requires explicit confirmation: "
+                  "set P2P_CONFIRM_COUNTED=YES")
+            return 2
+        gate = Path(args.out).parent / "friendly_gate.json"
+        if not gate.exists() or \
+                not json.loads(gate.read_text(encoding="utf-8")).get("passed"):
+            print(f"counted mode requires a passed friendly gate at {gate}")
+            return 2
+    my_port = args.my_port or (8801 if args.role == "police" else 8802)
+    peer = ReferenceSeriesPeer(
+        natural_role=args.role, config=cfg, opponent_url=args.opponent_url,
+        my_port=my_port, num_games=args.games, mode=args.mode,
+        alternate_roles=not args.no_alternate_roles,
+        handshake_per_sub_game=not args.no_handshake_per_sub_game,
+        turn_timeout=args.turn_timeout, out_dir=args.out, seed=args.seed,
+        mcp_url=args.mcp_url)
+    peer.start_server()
+    result = peer.run_series()
+    passed = result["all_audits_verified"] and \
+        result["num_sub_games"] == args.games
+    print(json.dumps({"mode": args.mode, "passed": passed,
+                      "totals": result["totals"],
+                      "series_winner": result["series_winner"],
+                      "result_sha256": result["result_sha256"]}))
+    return 0 if passed else 1
 
 
 def _load_board_config() -> dict:
@@ -38,10 +91,10 @@ def cmd_selftest_scent(games: int, seed: int) -> int:
 
 def cmd_selftest(steps: int) -> int:
     # Local imports keep `--help` fast and dependency-free.
+    from police_thief.domain import rules
     from police_thief.domain.belief import BeliefGrid
     from police_thief.domain.board import Board
     from police_thief.domain.own_state import OwnGameState
-    from police_thief.domain import rules
     from police_thief.strategy.heuristic import ManhattanBayesPolice, ManhattanBayesThief
 
     cfg = _load_board_config()
