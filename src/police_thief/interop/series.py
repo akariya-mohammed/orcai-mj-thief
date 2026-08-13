@@ -31,7 +31,7 @@ from police_thief.exceptions import ProtocolViolation
 from police_thief.interop import refaudit, wire
 from police_thief.interop import terms as terms_mod
 from police_thief.interop.mcp import Inbox, LinkError, RefLink, serve_in_thread
-from police_thief.interop.refcrypto import digest, seal
+from police_thief.interop.refcrypto import digest, mutual_digest, seal
 from police_thief.peer.hint_policy import weigh as weigh_hint
 from police_thief.peer.receive import accept_barrier
 from police_thief.peer.sealing import move_str
@@ -339,7 +339,7 @@ class ReferenceSeriesPeer:
         self.log(f"[{self.natural_role}] interop MCP server on port {self.my_port} "
                  f"({self.mode.upper()} mode)")
 
-    def wait_for_opponent(self, attempts: int = 60, delay: float = 2.0) -> bool:
+    def wait_for_opponent(self, attempts: int = 150, delay: float = 2.0) -> bool:
         """An agreement already in our inbox is stronger evidence than a probe."""
         for _ in range(attempts):
             if not self.inbox.agreements.empty():
@@ -590,6 +590,77 @@ class ReferenceSeriesPeer:
             links[f"group_2_repo_{k}"] = v
         return links
 
+    def _build_mutual_doc(self) -> dict:
+        """Build the shared cross-team outcome document for mutual_agreement.sha256.
+
+        Canonical game_id uses alphabetically sorted group IDs so both teams
+        derive the same identifier regardless of which side calls this.
+        Aggregate and per-sub-game scores are computed from self.rows.
+        Links, local audit data, and all private fields are excluded.
+        """
+        our_group = self.identity.get("group_id", "orcai-mj")
+        their_group = self.their_identity.get("group_id", "") or "opponent"
+
+        groups_sorted = sorted([our_group, their_group])
+        canonical_game_id = f"{groups_sorted[0]}-vs-{groups_sorted[1]}"
+
+        group_scores: dict = {our_group: 0, their_group: 0}
+        group_wins: dict = {our_group: 0, their_group: 0}
+        ties_count = 0
+        mutual_sub_games = []
+
+        for row in self.rows:
+            my_role = row["my_role"]
+            their_role = THIEF if my_role == POLICE else POLICE
+            ending = row["ending"]
+            winner_role = row["winner"]
+
+            our_score = row["police_score"] if my_role == POLICE else row["thief_score"]
+            their_score = row["thief_score"] if my_role == POLICE else row["police_score"]
+
+            if ending == "tie":
+                winner_group_id = "tie"
+                ties_count += 1
+            elif winner_role == my_role:
+                winner_group_id = our_group
+                group_wins[our_group] += 1
+            else:
+                winner_group_id = their_group
+                group_wins[their_group] += 1
+
+            group_scores[our_group] += our_score
+            group_scores[their_group] += their_score
+
+            mutual_sub_games.append({
+                "sub_game_number": row["index"],
+                "roles": {our_group: my_role, their_group: their_role},
+                "result": ending,
+                "winner_group": winner_group_id,
+                "score": {our_group: our_score, their_group: their_score},
+            })
+
+        if group_scores[our_group] > group_scores[their_group]:
+            series_winner_group = our_group
+            is_series_tie = False
+        elif group_scores[their_group] > group_scores[our_group]:
+            series_winner_group = their_group
+            is_series_tie = False
+        else:
+            series_winner_group = "tie"
+            is_series_tie = True
+
+        return {
+            "game_id": canonical_game_id,
+            "aggregate": {
+                "total_score": dict(group_scores),
+                "sub_games_won": dict(group_wins),
+                "ties": ties_count,
+                "winner_group": series_winner_group,
+                "series_tie": is_series_tie,
+            },
+            "sub_games": mutual_sub_games,
+        }
+
     def _write_declaration(self) -> None:
         """Write declaration_{game_id}.json before the first sub-game."""
         from police_thief.shared.sysinfo import hardware_spec as get_hw
@@ -633,7 +704,7 @@ class ReferenceSeriesPeer:
         path = self.out_dir / f"declaration_{self.game_id}.json"
         path.write_text(json.dumps(declaration, indent=2, ensure_ascii=False),
                         encoding="utf-8")
-        self.log(f"[{self.natural_role}] declaration written → {path.name}")
+        self.log(f"[{self.natural_role}] declaration written -> {path.name}")
 
     def _write_config_artifact(self, n: int) -> None:
         """Write config_{game_id}_g{NN}.json — the agreed terms for sub-game n."""
@@ -675,6 +746,23 @@ class ReferenceSeriesPeer:
             pass
 
     # -- series --------------------------------------------------------------
+    def reset_for_next_series(self) -> None:
+        """Drain per-series state so run_series() can be called again.
+        The MCP server thread is NOT restarted — it keeps serving across resets.
+        """
+        import queue as _queue
+        for q in (self.inbox.agreements, self.inbox.turns, self.inbox.audits):
+            while True:
+                try:
+                    q.get_nowait()
+                except _queue.Empty:
+                    break
+        self.rows = []
+        self.game_id = ""
+        self.game_uid = ""
+        self.game_started_at = ""
+        self.their_identity = {}
+
     def run_series(self) -> dict:
         self.game_started_at = datetime.now(UTC).isoformat()
         if not self.wait_for_opponent():
@@ -759,6 +847,8 @@ class ReferenceSeriesPeer:
             "series_winner": winner,
             "all_audits_verified": clean,
         }
+        # Populate mutual_agreement.sha256 BEFORE signing so result_sha256 covers it
+        body["mutual_agreement"]["sha256"] = mutual_digest(self._build_mutual_doc())
         body["result_sha256"] = digest(body)
 
         self.out_dir.mkdir(parents=True, exist_ok=True)

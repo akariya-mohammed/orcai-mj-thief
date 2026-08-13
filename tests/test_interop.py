@@ -506,3 +506,156 @@ def test_emission_matches_book_figure4():
     for d2, expected in [(0, 0.90), (1, 0.62), (2, 0.42), (4, 0.20),
                          (5, 0.14), (8, 0.04)]:
         assert emission_at(d2) == pytest.approx(expected, abs=0.011)
+
+
+# -- mutual outcome digest ------------------------------------------------------
+
+from police_thief.interop.refcrypto import mutual_digest  # noqa: E402
+
+YOSEF_GOLDEN_DOC = {
+    "game_id": "ahk-yosi-vs-orcai-mj",
+    "aggregate": {
+        "total_score": None,
+        "sub_games_won": None,
+        "ties": None,
+        "winner_group": None,
+        "series_tie": None,
+    },
+    "sub_games": [
+        {
+            "sub_game_number": 1,
+            "roles": {"ahk-yosi": "thief", "orcai-mj": "police"},
+            "result": "capture",
+            "winner_group": "orcai-mj",
+            "score": {"ahk-yosi": 5, "orcai-mj": 20},
+        },
+        {
+            "sub_game_number": 2,
+            "roles": {"ahk-yosi": "police", "orcai-mj": "thief"},
+            "result": "capture",
+            "winner_group": "ahk-yosi",
+            "score": {"ahk-yosi": 20, "orcai-mj": 5},
+        },
+    ],
+}
+YOSEF_GOLDEN_EXPECTED = "a9fa6576dca69a25535e19fe4e07b6d4a397f5f60772f2252f98fc166c7bad45"
+
+
+def test_mutual_digest_yosef_golden_vector():
+    """mutual_digest must reproduce Yosef's exact expected SHA-256."""
+    assert mutual_digest(YOSEF_GOLDEN_DOC) == YOSEF_GOLDEN_EXPECTED
+
+
+def test_mutual_digest_different_from_private_digest():
+    """mutual_digest uses different separators than digest() — they must differ
+    for any non-trivial document."""
+    assert mutual_digest(YOSEF_GOLDEN_DOC) != digest(YOSEF_GOLDEN_DOC)
+
+
+def test_mutual_digest_excludes_links_and_local_fields():
+    """Links and other local fields must NOT be included in the mutual document."""
+    doc_with_links = dict(YOSEF_GOLDEN_DOC, links={"group_1_repo_main": "https://x"})
+    assert mutual_digest(doc_with_links) != YOSEF_GOLDEN_EXPECTED
+
+
+def test_mutual_agreement_sha256_populated_in_result(tmp_path):
+    """build_result populates mutual_agreement.sha256 with a 64-char hex SHA-256."""
+    peer = _peer(out_dir=str(tmp_path))
+    result = peer.build_result()
+    sha = result["mutual_agreement"]["sha256"]
+    assert sha and len(sha) == 64
+    assert all(c in "0123456789abcdef" for c in sha)
+
+
+def test_mutual_agreement_sha256_covered_by_result_sha256(tmp_path):
+    """result_sha256 must be computed AFTER mutual_agreement.sha256 is set."""
+    peer = _peer(out_dir=str(tmp_path))
+    result = peer.build_result()
+    claimed = result.pop("result_sha256")
+    result.pop("report_status", None)
+    assert digest(result) == claimed
+    assert result["mutual_agreement"]["sha256"] != ""
+
+
+def _make_row(n, my_role, ending, winner_role, police_score, thief_score):
+    return {
+        "index": n, "my_role": my_role, "ending": ending, "winner": winner_role,
+        "cause": "test", "step": 5, "police_score": police_score,
+        "thief_score": thief_score, "audit_of_opponent": "Verified OK",
+        "audit_violations": [], "audit_delivered": True,
+        "opponent_audit_of_us": "", "protocol_violations": [],
+    }
+
+
+def _peer_with_rows(our_group, their_group, rows):
+    peer = object.__new__(ReferenceSeriesPeer)
+    peer.identity = {"group_id": our_group}
+    peer.their_identity = {"group_id": their_group}
+    peer.rows = rows
+    return peer
+
+
+def test_mutual_digest_opposite_perspective_equal():
+    """Both teams' _build_mutual_doc must produce the same mutual_digest."""
+    rows_orcai = [
+        _make_row(1, "police", "capture", "police", 20, 5),
+        _make_row(2, "thief",  "capture", "police", 20, 5),
+    ]
+    rows_ahk = [
+        _make_row(1, "thief",  "capture", "police", 20, 5),
+        _make_row(2, "police", "capture", "police", 20, 5),
+    ]
+    p_orcai = _peer_with_rows("orcai-mj", "ahk-yosi", rows_orcai)
+    p_ahk   = _peer_with_rows("ahk-yosi", "orcai-mj", rows_ahk)
+    doc1 = p_orcai._build_mutual_doc()
+    doc2 = p_ahk._build_mutual_doc()
+    assert mutual_digest(doc1) == mutual_digest(doc2)
+    assert doc1["game_id"] == doc2["game_id"] == "ahk-yosi-vs-orcai-mj"
+
+
+def test_mutual_doc_game_id_is_alphabetically_sorted():
+    """Canonical game_id in the mutual doc is always alpha-sorted."""
+    peer = _peer_with_rows("orcai-mj", "ahk-yosi", [])
+    doc = peer._build_mutual_doc()
+    assert doc["game_id"] == "ahk-yosi-vs-orcai-mj"
+
+
+def test_mutual_doc_six_sub_game_mapping():
+    """Six sub-games with alternating roles map to correct mutual entries."""
+    rows = [
+        _make_row(1, "police", "capture",  "police", 20, 5),
+        _make_row(2, "thief",  "capture",  "police", 20, 5),
+        _make_row(3, "police", "survival", "thief",   5, 10),
+        _make_row(4, "thief",  "survival", "thief",   5, 10),
+        _make_row(5, "police", "capture",  "police", 20, 5),
+        _make_row(6, "thief",  "capture",  "police", 20, 5),
+    ]
+    peer = _peer_with_rows("orcai-mj", "ahk-yosi", rows)
+    doc = peer._build_mutual_doc()
+    assert len(doc["sub_games"]) == 6
+    sg1 = doc["sub_games"][0]
+    assert sg1["sub_game_number"] == 1
+    assert sg1["roles"]["orcai-mj"] == "police"
+    assert sg1["roles"]["ahk-yosi"] == "thief"
+    assert sg1["result"] == "capture"
+    assert sg1["winner_group"] == "orcai-mj"
+    assert sg1["score"]["orcai-mj"] == 20
+    assert sg1["score"]["ahk-yosi"] == 5
+    agg = doc["aggregate"]
+    assert agg["series_tie"] is True
+    assert agg["winner_group"] == "tie"
+    assert agg["ties"] == 0
+
+
+def test_mutual_doc_aggregate_winner_group():
+    """winner_group in aggregate identifies the group with the higher total."""
+    rows = [
+        _make_row(1, "police", "capture", "police", 20, 5),
+        _make_row(2, "police", "capture", "police", 20, 5),
+    ]
+    peer = _peer_with_rows("orcai-mj", "ahk-yosi", rows)
+    doc = peer._build_mutual_doc()
+    assert doc["aggregate"]["winner_group"] == "orcai-mj"
+    assert doc["aggregate"]["series_tie"] is False
+    assert doc["aggregate"]["total_score"]["orcai-mj"] == 40
+    assert doc["aggregate"]["total_score"]["ahk-yosi"] == 10

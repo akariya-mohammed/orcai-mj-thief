@@ -257,9 +257,12 @@ try {
     Wait-Peers $peers 90
 } finally {
     $peers | ForEach-Object { Stop-Quiet $_.Process }
-    $tunnels | ForEach-Object { Stop-Quiet $_.Process }
-    Log "all processes and tunnels stopped; logs preserved in $LogDir"
+    Log "peer processes stopped; logs preserved in $LogDir"
 }
+# Tunnels are stopped here — AFTER peer exits — so they survive any peer crash
+# and a peer can be restarted without losing the Cloudflare hostname.
+$tunnels | ForEach-Object { Stop-Quiet $_.Process }
+Log "tunnels stopped"
 
 $allPass = $true
 foreach ($p in $peers) {

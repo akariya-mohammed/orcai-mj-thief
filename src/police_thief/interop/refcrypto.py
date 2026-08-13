@@ -53,6 +53,18 @@ def seal(payload: dict[str, Any]) -> dict[str, Any]:
             "commit": reference_commit(payload, nonce)}
 
 
+def mutual_digest(doc: dict) -> str:
+    """Shared cross-team outcome digest agreed with ahk-yosi.
+
+    Uses json.dumps(doc, sort_keys=True) with Python DEFAULT separators
+    (', ' and ': ') so both teams produce byte-identical output regardless
+    of dict insertion order. Our private result_sha256 continues to use
+    tight-separator canonical JSON via digest(); this function is exclusively
+    for the mutual_agreement.sha256 field.
+    """
+    return sha256_hex(json.dumps(doc, sort_keys=True).encode("utf-8"))
+
+
 def verify_record(record: dict[str, Any]) -> bool:
     """Re-hash one revealed ``{payload, nonce, commit}`` record (timing-safe)."""
     try:

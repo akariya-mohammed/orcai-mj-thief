@@ -58,23 +58,37 @@ def cmd_interop(args) -> int:
         turn_timeout=args.turn_timeout, out_dir=args.out, seed=args.seed,
         mcp_url=args.mcp_url)
     peer.start_server()
-    result = peer.run_series()
-    passed = result["all_audits_verified"] and result["num_sub_games"] == args.games
-    if args.mode == "counted":
-        rpt = result.get("report_status", {})
-        rpt_status = rpt.get("status", "unknown")
-        if rpt_status != "sent":
-            print(json.dumps({"mode": args.mode, "passed": False,
-                              "report_status": rpt_status,
-                              "error": rpt.get("error") or "email not sent",
-                              "totals": result["totals"],
-                              "series_winner": result["series_winner"]}))
-            return 1
-    print(json.dumps({"mode": args.mode, "passed": passed,
-                      "totals": result["totals"],
-                      "series_winner": result["series_winner"],
-                      "result_sha256": result["result_sha256"]}))
-    return 0 if passed else 1
+    import time as _time
+    while True:
+        try:
+            result = peer.run_series()
+        except Exception as exc:
+            print(json.dumps({"mode": args.mode, "error": str(exc), "passed": False}),
+                  flush=True)
+            if args.mode != "friendly":
+                return 1
+            _time.sleep(5)
+            peer.reset_for_next_series()
+            continue
+        passed = result["all_audits_verified"] and result["num_sub_games"] == args.games
+        if args.mode == "counted":
+            rpt = result.get("report_status", {})
+            rpt_status = rpt.get("status", "unknown")
+            if rpt_status != "sent":
+                print(json.dumps({"mode": args.mode, "passed": False,
+                                  "report_status": rpt_status,
+                                  "error": rpt.get("error") or "email not sent",
+                                  "totals": result["totals"],
+                                  "series_winner": result["series_winner"]}))
+                return 1
+        print(json.dumps({"mode": args.mode, "passed": passed,
+                          "totals": result["totals"],
+                          "series_winner": result["series_winner"],
+                          "result_sha256": result["result_sha256"]}), flush=True)
+        if args.mode != "friendly":
+            return 0 if passed else 1
+        _time.sleep(5)
+        peer.reset_for_next_series()
 
 
 def cmd_authorize(credentials_path: str = "credentials.json",
