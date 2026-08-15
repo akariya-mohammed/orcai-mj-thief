@@ -1,0 +1,21 @@
+# PRIVATE config for the THIEF peer vs Team amireman (this side only).
+# Isolated from config/thief/game.toml. Wire group_id for this opponent is
+# exactly "Orcai-MJ" (case-sensitive), per Ameer's confirmation. No secrets.
+version = "1.0"
+
+[game]
+group_name = "Orcai-MJ"
+group_id = "Orcai-MJ"
+members = ["Jude Khleif", "Mohammad Akariya"]
+llm_model = "none (deterministic heuristic agent)"
+seed = 1000
+
+[game.repos]
+cop = "https://github.com/akariya-mohammed/orcai-mj-cop"
+thief = "https://github.com/akariya-mohammed/orcai-mj-thief"
+
+[network]
+turn_timeout_seconds = 180
+
+[belief]
+smell_trust_weight = 4.0

@@ -28,7 +28,7 @@ from police_thief.domain.game_ids import make_game_id, make_game_uid
 from police_thief.domain.own_state import OwnGameState
 from police_thief.domain.smell import ScentGrid
 from police_thief.exceptions import ProtocolViolation
-from police_thief.interop import refaudit, wire
+from police_thief.interop import consensus, refaudit, wire
 from police_thief.interop import terms as terms_mod
 from police_thief.interop.mcp import Inbox, LinkError, RefLink, serve_in_thread
 from police_thief.interop.refcrypto import digest, mutual_digest, seal
@@ -74,10 +74,12 @@ def score_for(ending: str, scoring: dict) -> tuple[int, int]:
 class SubGame:
     """Local truth for one sub-game: state, belief, scent, sealed records, claims."""
 
-    def __init__(self, my_role: str, config, sub_game: int, seed: int) -> None:
+    def __init__(self, my_role: str, config, sub_game: int, seed: int,
+                 spec_profile: str = "ahk-yosi") -> None:
         self.my_role = my_role
         self.n = sub_game
         self.config = config
+        self.spec_profile = spec_profile
         size = config.get("board.size", 7)
         key = "cop_start" if my_role == POLICE else "thief_start"
         start = tuple(config.get(f"positions.{key}",
@@ -149,13 +151,24 @@ class SubGame:
         self.my_scent_history.append(dict(snapshot))
 
         capture_claim = None
-        if self.my_role == POLICE and decision.move_type is MoveType.MOVE and \
-                tuple(self.state.position) == tuple(self.belief.most_likely()):
-            capture_claim = list(self.state.position)
+        if self.my_role == POLICE:
+            if self.spec_profile == "amireman":
+                # Spec Section 5: the Cop declares a capture-claim for its own
+                # post-move cell on EVERY Cop turn — including STAY and barrier
+                # turns — with no gating and never chosen by strategy.
+                capture_claim = list(self.state.position)
+            elif decision.move_type is MoveType.MOVE and \
+                    tuple(self.state.position) == tuple(self.belief.most_likely()):
+                # ahk-yosi dialect (p2p_pursuit): claim only when we step onto
+                # the believed cell. Left unchanged so that path keeps verifying.
+                capture_claim = list(self.state.position)
 
         win_claim = None
         if self.my_role == THIEF and step >= threshold and not self.captured:
-            win_claim = {"type": SURVIVAL, "step": step}
+            # Spec Appendix D: the survival claim is exactly {"type": "survival"}.
+            # The ahk-yosi dialect additionally carries the step field.
+            win_claim = ({"type": SURVIVAL} if self.spec_profile == "amireman"
+                         else {"type": SURVIVAL, "step": step})
             self.outcome = {"ending": SURVIVAL, "winner": THIEF, "step": step,
                             "cause": f"survived {step} steps"}
 
@@ -299,32 +312,46 @@ class ReferenceSeriesPeer:
                  agreement_timeout: float = AGREEMENT_WAIT,
                  audit_wait: float = AUDIT_WAIT, out_dir: str = "artifacts/interop",
                  seed: int = 0, mcp_url: str | None = None,
-                 prior_counted_games: int = 0, log_fn=print) -> None:
+                 prior_counted_games: int = 0, log_fn=print,
+                 spec_profile: str = "ahk-yosi", git_commit_hash: str = "",
+                 consensus_wait: float | None = None,
+                 game_id_override: str | None = None) -> None:
         if mode not in (FRIENDLY, COUNTED):
             raise ValueError(f"unknown mode {mode!r}")
         if natural_role not in (POLICE, THIEF):
             raise ValueError(f"unknown role {natural_role!r}")
+        if spec_profile not in ("ahk-yosi", "amireman"):
+            raise ValueError(f"unknown spec_profile {spec_profile!r}")
         self.natural_role = natural_role
         self.config = config
         self.num_games = num_games
         self.mode = mode
+        self.spec_profile = spec_profile
         self.alternate_roles = alternate_roles
         self.handshake_per_sub_game = handshake_per_sub_game
         self.turn_timeout = turn_timeout
         self.agreement_timeout = agreement_timeout
         self.audit_wait = audit_wait
+        self.consensus_wait = consensus_wait if consensus_wait is not None else audit_wait
         self.out_dir = Path(out_dir)
         self.seed = seed
         self.my_port = my_port
         self.log = log_fn
         self.inbox = Inbox()
         self.link = RefLink(opponent_url)
+        self.game_id_override = game_id_override
         self.terms = terms_mod.build_terms(config, num_games)
+        hw = None
+        if spec_profile == "amireman":
+            from police_thief.shared.sysinfo import detailed_hardware_spec
+            hw = detailed_hardware_spec()
         self.identity = terms_mod.build_identity(
             config, mcp_url=mcp_url or f"http://0.0.0.0:{my_port}/mcp",
-            prior_counted_games=prior_counted_games)
+            prior_counted_games=prior_counted_games,
+            git_commit_hash=git_commit_hash, hardware_spec=hw)
         self.their_identity: dict = {}
         self.rows: list[dict] = []
+        self.mutual_agreement: dict = {}   # spec-profile series consensus outcome
         self._server_thread = None
         # Computed after initial negotiation (game_id requires both group IDs)
         self.game_id: str = ""
@@ -396,7 +423,8 @@ class ReferenceSeriesPeer:
         my_role = role_for(self.natural_role, n) if self.alternate_roles \
             else self.natural_role
         started_at = datetime.now(UTC).isoformat()
-        engine = SubGame(my_role, self.config, n, seed=self.seed + n)
+        engine = SubGame(my_role, self.config, n, seed=self.seed + n,
+                         spec_profile=self.spec_profile)
         self.log(f"[{self.natural_role}] sub-game {n}: playing as {my_role}")
 
         if n > 1 and self.handshake_per_sub_game:
@@ -508,6 +536,20 @@ class ReferenceSeriesPeer:
             "audit_delivered": sent_ok,
             "opponent_audit_of_us": "not reported (reference dialect)",
             "protocol_violations": engine.violations,
+            # Per-sub-game identity capture (Section 3/12): the commit each side
+            # played THIS sub-game. Re-read every handshake; MAY differ per game.
+            "started_at": started_at,
+            "ended_at": datetime.now(UTC).isoformat(),
+            "our_commit": (self.identity.get("github_commit") or ""),
+            "their_commit": (self.their_identity.get("github_commit")
+                             or self.their_identity.get("git_commit_hash") or ""),
+            "their_group_id": self.their_identity.get("group_id", ""),
+            "result_agreed": (theirs is not None
+                              and verdict.startswith(refaudit.VERIFIED_OK)
+                              and (theirs.get("result_claim")
+                                   in (None, "unknown", ending))),
+            "log_verified": (theirs is not None
+                             and verdict.startswith(refaudit.VERIFIED_OK)),
         }
         self._write_log(engine, n, row, theirs, started_at)
         self.log(f"[{self.natural_role}] sub-game {n}: {ending} "
@@ -758,6 +800,7 @@ class ReferenceSeriesPeer:
                 except _queue.Empty:
                     break
         self.rows = []
+        self.mutual_agreement = {}
         self.game_id = ""
         self.game_uid = ""
         self.game_started_at = ""
@@ -770,18 +813,35 @@ class ReferenceSeriesPeer:
         ok, reason = self.negotiate_boundary(1)
         if not ok:
             raise LinkError(f"initial negotiation failed: {reason}")
-        # Compute game_id once both identities are known
-        our_group = self.identity.get("group_id", "orcai-mj")
-        their_group = self.their_identity.get("group_id", "opponent")
-        self.game_id = make_game_id(our_group, their_group)
-        self.game_uid = make_game_uid(our_group, their_group, digest(self.config.shared))
+        # Compute game_id/game_uid once both identities are known
+        self._compute_ids()
         self.log(f"[{self.natural_role}] game_id={self.game_id} uid={self.game_uid}")
         self._write_declaration()
         self.log(f"[{self.natural_role}] agreement verified with "
                  f"{self.their_identity.get('group_id', 'opponent')}")
         for n in range(1, self.num_games + 1):
             self.rows.append(self.play_sub_game(n))
+        if self.spec_profile == "amireman":
+            self._run_consensus_exchange()
+            return self.build_spec_result()
         return self.build_result()
+
+    def _compute_ids(self) -> None:
+        """Derive game_id/game_uid per the active profile (both must match peer)."""
+        our_group = self.identity.get("group_id", "orcai-mj")
+        their_group = self.their_identity.get("group_id", "opponent")
+        if self.spec_profile == "amireman":
+            # Spec Appendix B: sorted "-vs-" id and a UUID over canonical(terms).
+            # game_id MAY be a mutually-agreed label (e.g. TEST22); game_uid is
+            # ALWAYS derived and never overridden.
+            self.game_id = self.game_id_override or \
+                consensus.spec_game_id(our_group, their_group)
+            self.game_uid = consensus.spec_game_uid(self.terms, our_group,
+                                                    their_group)
+        else:
+            self.game_id = make_game_id(our_group, their_group)
+            self.game_uid = make_game_uid(our_group, their_group,
+                                          digest(self.config.shared))
 
     def build_result(self) -> dict:
         # Compute game_id lazily when build_result is called without run_series
@@ -870,6 +930,215 @@ class ReferenceSeriesPeer:
         self.log(f"[{self.natural_role}] series done: totals={body['totals']} "
                  f"winner={winner} report={report['status']}")
         return body
+
+    # -- amireman public spec: consensus object, exchange, Section 12 report ---
+    def _canonical_rows(self) -> list[dict]:
+        """The six spec rows (Section 11), group-keyed, from self.rows."""
+        our_group = self.identity.get("group_id", "orcai-mj")
+        their_group = self.their_identity.get("group_id", "") or "opponent"
+        rows: list[dict] = []
+        for row in self.rows:
+            my_role = row["my_role"]
+            their_role = other(my_role)
+            our_score = row["police_score"] if my_role == POLICE else row["thief_score"]
+            their_score = row["thief_score"] if my_role == POLICE else row["police_score"]
+            if our_score > their_score:
+                winner_group = our_group
+            elif their_score > our_score:
+                winner_group = their_group
+            else:                                  # per-sub-game score tie / 0-0
+                winner_group = None
+            rows.append(consensus.consensus_row(
+                sub_game_number=row["index"], result=row["ending"],
+                roles={our_group: my_role, their_group: their_role},
+                score={our_group: our_score, their_group: their_score},
+                winner_group=winner_group))
+        return rows
+
+    def _consensus_object(self) -> dict:
+        if not self.game_id:
+            self._compute_ids()
+        return consensus.build_consensus_object(
+            self.game_id, self.game_uid, self._canonical_rows())
+
+    def _run_consensus_exchange(self) -> dict:
+        """Section 10 step 3: send our series digest, wait (bounded) for theirs,
+        and confirm agreement only when the received remote digest equals ours,
+        every remote log verified, and every sub-game result was agreed."""
+        our_sha = consensus.consensus_sha(self._consensus_object())
+        last_role = role_for(self.natural_role, self.num_games) \
+            if self.alternate_roles else self.natural_role
+        envelope = consensus.build_consensus_envelope(last_role, our_sha)
+        delivered = True
+        try:
+            self.link.submit_audit(envelope)
+        except LinkError as exc:
+            delivered = False
+            self.log(f"[{self.natural_role}] consensus envelope delivery failed: {exc}")
+
+        peer_sha = ""
+        deadline = time.monotonic() + self.consensus_wait
+        while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            try:
+                env = self.inbox.audits.get(timeout=min(2.0, max(0.1, remaining)))
+            except queue.Empty:
+                continue
+            accepted, _reason = consensus.validate_remote_consensus(env)
+            if accepted:
+                peer_sha = env["consensus_sha"]
+                break
+            # Straggler per-sub-game audit (no valid consensus_sha) — skip it.
+        rows_present = bool(self.rows)
+        results_agreed = rows_present and all(r.get("result_agreed") for r in self.rows)
+        logs_verified = rows_present and all(r.get("log_verified") for r in self.rows)
+        sha_match = bool(peer_sha) and peer_sha == our_sha
+        self.mutual_agreement = {
+            "sha256": our_sha,
+            "peer_sha256": peer_sha,
+            "sha_match": sha_match,
+            "results_agreed": results_agreed,
+            "confirmed": bool(sha_match and results_agreed and logs_verified),
+            "consensus_delivered": delivered,
+        }
+        self.log(f"[{self.natural_role}] consensus: ours={our_sha[:12]} "
+                 f"theirs={(peer_sha or '<none>')[:12]} match={sha_match} "
+                 f"confirmed={self.mutual_agreement['confirmed']}")
+        return self.mutual_agreement
+
+    def build_spec_result(self) -> dict:
+        """Section 12 result report (amireman public spec)."""
+        if not self.game_id:
+            self._compute_ids()
+        our_group = self.identity.get("group_id", "orcai-mj")
+        their_group = self.their_identity.get("group_id", "") or "opponent"
+        our_id, their_id = self.identity, self.their_identity
+        canon_rows = self._canonical_rows()
+
+        # Series totals with the Section 6 +2 tie bonus, applied once, only on a tie.
+        total = {our_group: 0, their_group: 0}
+        for cr in canon_rows:
+            for g, s in cr["score"].items():
+                total[g] += s
+        base_tie = total[our_group] == total[their_group]
+        if base_tie:
+            total[our_group] += self.config.get("scoring", {}).get("tie_score", 2)
+            total[their_group] += self.config.get("scoring", {}).get("tie_score", 2)
+        sub_games_won = {
+            our_group: sum(1 for r in canon_rows if r["winner_group"] == our_group),
+            their_group: sum(1 for r in canon_rows if r["winner_group"] == their_group),
+        }
+        ties = sum(1 for r in canon_rows if r["winner_group"] is None)
+        winner_group = None if base_tie else (
+            our_group if total[our_group] > total[their_group] else their_group)
+
+        if not self.mutual_agreement:
+            self._run_consensus_exchange_stub()
+
+        from police_thief.shared.sysinfo import detailed_hardware_spec as get_hw
+        github_links = {
+            our_group: dict(our_id.get("repos", {})),
+            their_group: dict(their_id.get("repos", {})),
+        }
+
+        def _row_report(row: dict, cr: dict) -> dict:
+            n = row["index"]
+            return {
+                "sub_game_number": n,
+                "roles": cr["roles"],
+                "result": cr["result"],
+                "winner_group": cr["winner_group"],
+                "tie": cr["winner_group"] is None,
+                "score": cr["score"],
+                "github_commit": {our_group: row.get("our_commit", ""),
+                                  their_group: row.get("their_commit", "")},
+                "tokens": {our_group: 0, their_group: 0},
+                "steps": row.get("step", 0),
+                "started_at": row.get("started_at", ""),
+                "ended_at": row.get("ended_at", ""),
+                "audit": {
+                    "log_verified": bool(row.get("log_verified")),
+                    "tampered": row["audit_of_opponent"] == refaudit.TAMPERED,
+                    "result_agreed": bool(row.get("result_agreed")),
+                },
+                "log_files": [f"log_{self.game_id}_g{n:02d}.json"],
+            }
+
+        sub_games_report = [_row_report(row, cr)
+                            for row, cr in zip(self.rows, canon_rows)]
+
+        def _details(gid: str, ident: dict, hw: dict) -> dict:
+            return {
+                "group_id": gid,
+                "members": ident.get("members", []),
+                "repos": ident.get("repos", {}),
+                "mcp_servers": ident.get("mcp_servers", {}),
+                "llm_model": ident.get("llm_model", ""),
+                "hardware_spec": hw,
+            }
+
+        confirmed = bool(self.mutual_agreement.get("confirmed"))
+        game_ended_at = datetime.now(UTC).isoformat()
+        body = {
+            "report_type": "final_game_result",
+            "schema_version": SCHEMA_VERSION,
+            "game_id": self.game_id,
+            "game_uid": self.game_uid,
+            "groups": sorted([our_group, their_group]),
+            "timezone": "UTC",
+            "game_started_at": self.game_started_at,
+            "game_ended_at": game_ended_at,
+            "sub_games": sub_games_report,
+            "links": {"github": github_links},
+            "group_details": {
+                our_group: _details(our_group, our_id, get_hw()),
+                their_group: _details(their_group, their_id, {}),
+            },
+            "mutual_agreement": dict(self.mutual_agreement),
+            "final_result": {
+                "total_score": total,
+                "sub_games_won": sub_games_won,
+                "ties": ties,
+                "winner_group": winner_group,
+                "series_tie": base_tie,
+                "tokens_total_series": 0,
+            },
+            # -- internal keys the CLI / dispatch_report / launcher read --------
+            "dialect": "amireman",
+            "spec_profile": "amireman",
+            "match_mode": FRIENDLY_LABEL if self.mode == FRIENDLY else "COUNTED",
+            "num_sub_games": len(self.rows),
+            "config_sha256": digest(self.config.shared),
+            "totals": {"police": sum(r["police_score"] for r in self.rows),
+                       "thief": sum(r["thief_score"] for r in self.rows)},
+            "series_winner": winner_group or "tie",
+            "all_audits_verified": confirmed,
+        }
+        body["result_sha256"] = digest(body)
+
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        result_name = (f"result_{self.game_id}.json" if self.game_id
+                       else f"result_{self.natural_role}.json")
+        (self.out_dir / result_name).write_text(
+            json.dumps(body, indent=2, ensure_ascii=False), encoding="utf-8")
+        self._update_declaration_end(game_ended_at)
+        report = self.dispatch_report(body)
+        body["report_status"] = report
+        self.log(f"[{self.natural_role}] amireman series done: "
+                 f"winner={winner_group} confirmed={confirmed} "
+                 f"report={report['status']}")
+        return body
+
+    def _run_consensus_exchange_stub(self) -> None:
+        """Populate mutual_agreement with a local-only digest when no exchange
+        was run (e.g. build_spec_result called directly in a unit test). A
+        local digest alone MUST NOT confirm agreement (Section 10 step 4)."""
+        our_sha = consensus.consensus_sha(self._consensus_object())
+        self.mutual_agreement = {
+            "sha256": our_sha, "peer_sha256": "", "sha_match": False,
+            "results_agreed": False, "confirmed": False,
+            "consensus_delivered": False,
+        }
 
     # -- reporting: the friendly/counted hard wall -----------------------------
     def dispatch_report(self, result: dict) -> dict:

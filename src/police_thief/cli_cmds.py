@@ -10,6 +10,10 @@ BOOK_DEFAULTS = {"grid_size": 7, "cop_start": (0, 0), "thief_start": (3, 3)}
 AGREED_CONFIG_SHA256 = \
     "fef1fe3a229b0c7daece9f1e3ebe7a097a7207e6ac0628b6c67050595a6101be"
 
+#: Constitution for Team amireman (config/game.amireman.json — Haifa, spec App. A).
+AMIREMAN_CONFIG_SHA256 = \
+    "32e86f85c47920c4a567df403bd1f263f1bbea5f59c7db0b7aeb640f30d15812"
+
 
 def cmd_interop(args) -> int:
     """Run the reference-dialect networked series (friendly by default).
@@ -25,19 +29,31 @@ def cmd_interop(args) -> int:
     from police_thief.interop.series import ReferenceSeriesPeer
     from police_thief.shared.config import Config
 
+    spec_profile = getattr(args, "spec_profile", "ahk-yosi")
+    shared_json = getattr(args, "config_json", None) or "config/game.json"
     private = args.config or f"config/{args.role}/game.toml"
-    cfg = Config.load(private_path=private)
+    cfg = Config.load(shared_path=shared_json, private_path=private)
+    # The expected constitution depends on the opponent profile; --agreed-sha
+    # overrides it explicitly. ahk-yosi and amireman sign DIFFERENT constitutions
+    # (New York vs Haifa), so each has its own canonical SHA-256.
+    default_sha = (AMIREMAN_CONFIG_SHA256 if spec_profile == "amireman"
+                   else AGREED_CONFIG_SHA256)
+    expected_sha = getattr(args, "agreed_sha", None) or default_sha
     actual = digest(cfg.shared)
-    if actual != AGREED_CONFIG_SHA256:
-        print(f"REFUSING TO PLAY: config/game.json canonical SHA-256 is {actual}, "
-              f"agreed constitution is {AGREED_CONFIG_SHA256}")
+    if actual != expected_sha:
+        print(f"REFUSING TO PLAY: {shared_json} canonical SHA-256 is {actual}, "
+              f"agreed constitution ({spec_profile}) is {expected_sha}")
         return 2
     if args.mode == "counted":
         if os.environ.get("P2P_CONFIRM_COUNTED") != "YES":
             print("counted mode requires explicit confirmation: "
                   "set P2P_CONFIRM_COUNTED=YES")
             return 2
-        gate = Path(args.out).parent / "friendly_gate.json"
+        # Opponent-isolated gate: an ahk-yosi friendly gate must NOT authorize an
+        # amireman counted match (and vice-versa).
+        gate_name = ("friendly_gate.json" if spec_profile == "ahk-yosi"
+                     else f"friendly_gate_{spec_profile}.json")
+        gate = Path(args.out).parent / gate_name
         if not gate.exists() or \
                 not json.loads(gate.read_text(encoding="utf-8")).get("passed"):
             print(f"counted mode requires a passed friendly gate at {gate}")
@@ -56,7 +72,9 @@ def cmd_interop(args) -> int:
         alternate_roles=not args.no_alternate_roles,
         handshake_per_sub_game=not args.no_handshake_per_sub_game,
         turn_timeout=args.turn_timeout, out_dir=args.out, seed=args.seed,
-        mcp_url=args.mcp_url)
+        mcp_url=args.mcp_url, spec_profile=spec_profile,
+        git_commit_hash=getattr(args, "git_commit", ""),
+        game_id_override=getattr(args, "game_id", None))
     peer.start_server()
     import time as _time
     while True:

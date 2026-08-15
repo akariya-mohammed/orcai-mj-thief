@@ -52,6 +52,22 @@ def main(argv: list[str] | None = None) -> int:
     p_interop.add_argument("--no-handshake-per-sub-game", action="store_true")
     p_interop.add_argument("--config", default=None,
                            help="private toml (default: config/<role>/game.toml)")
+    p_interop.add_argument("--config-json", default="config/game.json",
+                           help="signed shared constitution (default: config/game.json; "
+                                "use config/game.amireman.json for team amireman)")
+    p_interop.add_argument("--spec-profile", choices=["ahk-yosi", "amireman"],
+                           default="ahk-yosi",
+                           help="interop dialect: ahk-yosi (default) or amireman "
+                                "(public spec: sorted game_id, UUID game_uid, "
+                                "series_consensus exchange, Section 12 report)")
+    p_interop.add_argument("--agreed-sha", default=None,
+                           help="override the expected constitution SHA-256 gate "
+                                "(defaults to the ahk-yosi constitution)")
+    p_interop.add_argument("--git-commit", default="",
+                           help="our real 40-hex runtime commit for the identity block")
+    p_interop.add_argument("--game-id", default=None,
+                           help="mutually-agreed game_id label override (e.g. TEST22); "
+                                "game_uid is still derived and never overridden")
     p_interop.add_argument("--mcp-url", default=None,
                            help="our public /mcp URL, for the identity block")
 

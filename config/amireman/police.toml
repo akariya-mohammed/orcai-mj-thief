@@ -1,0 +1,24 @@
+# PRIVATE config for the POLICE peer vs Team amireman (this side only).
+# Isolated from config/police/game.toml so our ahk-yosi identity (group_id
+# "orcai-mj") is never touched. Per Ameer's confirmation our wire group_id for
+# THIS opponent is exactly "Orcai-MJ" (case-sensitive). No secrets here.
+version = "1.0"
+
+[game]
+group_name = "Orcai-MJ"
+group_id = "Orcai-MJ"
+members = ["Jude Khleif", "Mohammad Akariya"]
+# No LLM is used: the agent is a deterministic heuristic (TrapperPolice /
+# RingRunnerThief) with template hint generation. Reported truthfully.
+llm_model = "none (deterministic heuristic agent)"
+seed = 0
+
+[game.repos]
+cop = "https://github.com/akariya-mohammed/orcai-mj-cop"
+thief = "https://github.com/akariya-mohammed/orcai-mj-thief"
+
+[network]
+turn_timeout_seconds = 180
+
+[belief]
+smell_trust_weight = 4.0

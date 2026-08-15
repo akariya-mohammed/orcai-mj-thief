@@ -34,20 +34,39 @@ def build_terms(config, num_games: int) -> dict[str, Any]:
     }
 
 
+def _valid_commit(value: str) -> str:
+    """A commit is honoured only when it is exactly 40 hex characters (Section 3)."""
+    value = str(value or "")
+    if len(value) == 40 and all(c in "0123456789abcdefABCDEF" for c in value):
+        return value.lower()
+    return ""
+
+
 def build_identity(config, *, mcp_url: str, prior_counted_games: int = 0,
-                   code_version: str = "") -> dict[str, Any]:
-    """Group identity block their `handshake_from_agreement` / reporting reads."""
+                   code_version: str = "", git_commit_hash: str = "",
+                   hardware_spec: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Group identity block their `handshake_from_agreement` / reporting reads.
+
+    ``git_commit_hash``/``github_commit`` carry the real 40-hex commit the
+    running code was built from (Section 3). A value that is not exactly 40 hex
+    characters is treated as absent and left empty rather than invented.
+    """
     game = (config.private or {}).get("game", {})
+    commit = _valid_commit(git_commit_hash or game.get("git_commit_hash", ""))
     return {
         "group_id": game.get("group_id", "orcai-mj"),
         "group_name": game.get("group_name", "Orcai-MJ"),
         "members": list(game.get("members", [])),
         "repos": dict(game.get("repos", {})),
         "mcp_servers": {"cop": mcp_url, "thief": mcp_url},
-        "llm_model": "template",
+        "llm_model": game.get("llm_model", "template"),
+        # Spec identity fields (Section 3). Both names carry the same commit.
+        "git_commit_hash": commit,
+        "github_commit": commit,
+        "spec": dict(hardware_spec) if hardware_spec else {},
+        # Retained for the ahk-yosi dialect / internal bookkeeping.
         "code_version": code_version,
         "prior_counted_games": prior_counted_games,
-        "spec": {},
     }
 
 

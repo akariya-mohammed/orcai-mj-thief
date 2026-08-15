@@ -57,3 +57,59 @@ def hardware_spec() -> dict:
                              if gpu_type != UNKNOWN else UNKNOWN,
         "vram_gb": vram,
     }
+
+
+def _windows_ram_gb() -> float | str:
+    """Physical RAM via ctypes (stdlib) when os.sysconf is unavailable."""
+    try:
+        import ctypes
+
+        class _MemStatus(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong),
+                        ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong),
+                        ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong),
+                        ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong),
+                        ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+        stat = _MemStatus()
+        stat.dwLength = ctypes.sizeof(_MemStatus)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+            return round(stat.ullTotalPhys / 1e9, 1)
+    except Exception:
+        pass
+    return UNKNOWN
+
+
+def _windows_cpu_brand() -> str:
+    """CPU brand string from the registry (stdlib winreg), else ''."""
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"HARDWARE\DESCRIPTION\System\CentralProcessor\0")
+        try:
+            value, _ = winreg.QueryValueEx(key, "ProcessorNameString")
+            return str(value).strip()
+        finally:
+            winreg.CloseKey(key)
+    except Exception:
+        return ""
+
+
+def detailed_hardware_spec() -> dict:
+    """hardware_spec() enriched with real Windows values where the portable
+    stdlib probes read 'unknown'. Additive and best-effort (never raises); the
+    ahk-yosi path keeps using the plain hardware_spec()."""
+    spec = hardware_spec()
+    if platform.system() == "Windows":
+        if spec.get("ram_gb") in (UNKNOWN, None):
+            spec["ram_gb"] = _windows_ram_gb()
+        brand = _windows_cpu_brand()
+        if brand:
+            spec["cpu_type"] = brand
+        spec["os"] = f"{platform.system()} {platform.release()}"
+    return spec
