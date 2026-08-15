@@ -11,6 +11,7 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 
 UNKNOWN = "unknown"
 
@@ -111,5 +112,14 @@ def detailed_hardware_spec() -> dict:
         brand = _windows_cpu_brand()
         if brand:
             spec["cpu_type"] = brand
-        spec["os"] = f"{platform.system()} {platform.release()}"
+        # platform.release() reports "10" even on Windows 11; use the build number
+        # (>= 22000 == Windows 11) so the reported OS is accurate.
+        rel = platform.release()
+        try:
+            build = getattr(sys, "getwindowsversion", lambda: None)()
+            if build is not None and build.build >= 22000 and rel == "10":
+                rel = "11"
+        except Exception:
+            pass
+        spec["os"] = f"Windows {rel} (build {platform.version()})"
     return spec
