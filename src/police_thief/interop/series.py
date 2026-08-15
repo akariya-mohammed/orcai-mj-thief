@@ -46,6 +46,11 @@ FRIENDLY, COUNTED = "friendly", "counted"
 FRIENDLY_LABEL = "FRIENDLY (UNCOUNTED)"
 SCHEMA_VERSION = "1.2"
 
+# amireman public-spec reporting recipients (Section 12 dispatch). Friendly
+# reports go to the team; counted reports go to the league address. The two
+# never cross over (a friendly must never reach the lecturer, and vice-versa).
+AMIREMAN_FRIENDLY_RECIPIENT = "judekhleif@gmail.com"
+
 AUDIT_WAIT = 20.0          # their REHANDSHAKE_AUDIT_WAIT
 AGREEMENT_WAIT = 60.0      # their re-negotiate window
 DEFAULT_TURN_TIMEOUT = 180.0
@@ -1122,12 +1127,55 @@ class ReferenceSeriesPeer:
         (self.out_dir / result_name).write_text(
             json.dumps(body, indent=2, ensure_ascii=False), encoding="utf-8")
         self._update_declaration_end(game_ended_at)
-        report = self.dispatch_report(body)
+        report = self._dispatch_report_amireman(body)
         body["report_status"] = report
         self.log(f"[{self.natural_role}] amireman series done: "
                  f"winner={winner_group} confirmed={confirmed} "
                  f"report={report['status']}")
         return body
+
+    def _new_gmail_sender(self):
+        """Construct the Gmail sender — a seam tests replace with a fake so no
+        real email is ever sent during testing."""
+        from police_thief.infra.email_sender import GmailSender
+        return GmailSender(self.config)
+
+    def _dispatch_report_amireman(self, result: dict) -> dict:
+        """amireman public-spec reporting (Section 12).
+
+        A COMPLETED series sends EXACTLY ONE email with EXACTLY ONE attachment,
+        ``result_<game_id>.json``. No declaration/config/log/audit/consensus
+        file is attached (those are still written locally). Recipient is chosen
+        strictly by mode and the two addresses never cross:
+
+        * friendly / non-counted -> the team address (never the lecturer);
+        * counted                -> the league address (never the team address).
+
+        A per-game sentinel guarantees one completed series cannot send twice.
+        """
+        from police_thief.infra.email_sender import LEAGUE_ADDRESS
+        game_id = self.game_id or f"interop-{self.identity.get('group_id', 'unknown')}"
+        recipient = (AMIREMAN_FRIENDLY_RECIPIENT if self.mode == FRIENDLY
+                     else LEAGUE_ADDRESS)
+        result_path = self.out_dir / f"result_{game_id}.json"
+        if not result_path.exists():
+            return {"status": "suppressed (no result artifact)",
+                    "recipient": recipient}
+        sentinel = self.out_dir / f"amireman_report_sent_{game_id}.lock"
+        if sentinel.exists():
+            return {"status": "duplicate_suppressed", "sentinel": str(sentinel),
+                    "recipient": recipient}
+        sender = self._new_gmail_sender()
+        sender.recipient = recipient          # explicit; never the config default
+        sender.mode = "send"                  # a completed series always sends
+        summary = {"game_id": game_id, "winner": result.get("series_winner")}
+        # EXACTLY one attachment: the final result report and nothing else.
+        report = sender.send_series_report({"result": result_path}, summary)
+        report["recipient"] = recipient
+        if report.get("status") == "sent":
+            sentinel.write_text(json.dumps(report, ensure_ascii=False),
+                                encoding="utf-8")
+        return report
 
     def _run_consensus_exchange_stub(self) -> None:
         """Populate mutual_agreement with a local-only digest when no exchange

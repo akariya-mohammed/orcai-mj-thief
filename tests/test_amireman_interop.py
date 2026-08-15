@@ -23,7 +23,13 @@ from police_thief.domain.brains import MoveType
 from police_thief.interop import consensus as C
 from police_thief.interop import terms as terms_mod
 from police_thief.interop.refcrypto import digest
-from police_thief.interop.series import POLICE, ReferenceSeriesPeer, SubGame
+from police_thief.infra.email_sender import LEAGUE_ADDRESS
+from police_thief.interop.series import (
+    AMIREMAN_FRIENDLY_RECIPIENT,
+    POLICE,
+    ReferenceSeriesPeer,
+    SubGame,
+)
 from police_thief.shared.config import Config
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -253,16 +259,39 @@ def test_survival_win_claim_is_exactly_type_survival():
 
 
 # -- peer id derivation + Section 12 report ----------------------------------
-def _amireman_peer(tmp_path, their_group="amireman") -> ReferenceSeriesPeer:
+class _FakeSender:
+    """Records send_series_report calls; NEVER touches the network so no real
+    email can be sent during testing."""
+
+    def __init__(self, record: list) -> None:
+        self._record = record
+        self.recipient = None
+        self.mode = "draft"
+
+    def send_series_report(self, artifact_paths, summary):
+        self._record.append({
+            "recipient": self.recipient,
+            "mode": self.mode,
+            "attachments": [Path(p).name for p in artifact_paths.values()],
+            "summary": summary,
+        })
+        return {"status": "sent", "id": "fake"}
+
+
+def _amireman_peer(tmp_path, their_group="amireman", mode="friendly",
+                   game_id_override=None) -> ReferenceSeriesPeer:
     peer = ReferenceSeriesPeer(
         natural_role="police", config=amireman_config(),
-        opponent_url="http://127.0.0.1:1/mcp", my_port=1, mode="friendly",
+        opponent_url="http://127.0.0.1:1/mcp", my_port=1, mode=mode,
         spec_profile="amireman", out_dir=str(tmp_path), log_fn=lambda *a: None,
-        git_commit_hash="a" * 40)
+        git_commit_hash="a" * 40, game_id_override=game_id_override)
     peer.their_identity = {"group_id": their_group, "group_name": "Amireman",
                            "members": ["m1"], "repos": {"cop": "u1", "thief": "u2"},
                            "mcp_servers": {"cop": "m", "thief": "m"},
                            "github_commit": "b" * 40, "git_commit_hash": "b" * 40}
+    # Install the fake sender so build_spec_result never sends a real email.
+    peer.sent_emails: list = []
+    peer._new_gmail_sender = lambda: _FakeSender(peer.sent_emails)
     return peer
 
 
@@ -389,3 +418,117 @@ def test_spec_report_consensus_confirmed_when_digests_match(tmp_path, monkeypatc
     assert ma["peer_sha256"] == our_sha
     assert ma["sha_match"] is True
     assert ma["confirmed"] is True
+
+
+# -- Section 12 reporting: exactly one email, one attachment -----------------
+def _draw_rows():
+    """Six survival sub-games; a full drawn series (writes a real result file)."""
+    return [
+        _row(1, "police", "survival", "thief", 5, 10),
+        _row(2, "thief",  "survival", "thief", 5, 10),
+        _row(3, "police", "survival", "thief", 5, 10),
+        _row(4, "thief",  "survival", "thief", 5, 10),
+        _row(5, "police", "survival", "thief", 5, 10),
+        _row(6, "thief",  "survival", "thief", 5, 10),
+    ]
+
+
+def test_amireman_friendly_sends_one_email_to_team(tmp_path):
+    """Friendly TEST22: exactly one send, to the team address, attaching only
+    result_TEST22.json."""
+    peer = _amireman_peer(tmp_path, mode="friendly", game_id_override="TEST22")
+    peer._compute_ids()
+    peer.rows = _draw_rows()
+    body = peer.build_spec_result()
+
+    assert len(peer.sent_emails) == 1
+    sent = peer.sent_emails[0]
+    assert sent["recipient"] == AMIREMAN_FRIENDLY_RECIPIENT == "judekhleif@gmail.com"
+    assert sent["attachments"] == ["result_TEST22.json"]
+    assert sent["mode"] == "send"
+    assert body["report_status"]["status"] == "sent"
+    assert body["report_status"]["recipient"] == "judekhleif@gmail.com"
+    # the real result artifact exists on disk
+    assert (tmp_path / "result_TEST22.json").exists()
+
+
+def test_amireman_counted_sends_one_email_to_league(tmp_path):
+    """Counted: exactly one send, to the league address, one result attachment."""
+    peer = _amireman_peer(tmp_path, mode="counted",
+                          game_id_override="amireman-vs-orcai-mj")
+    peer._compute_ids()
+    peer.rows = [_row(1, "police", "capture", "police", 20, 5)]
+    body = peer.build_spec_result()
+
+    assert len(peer.sent_emails) == 1
+    sent = peer.sent_emails[0]
+    assert sent["recipient"] == LEAGUE_ADDRESS == "rmisegal+uoh26finalgame@gmail.com"
+    assert sent["attachments"] == ["result_amireman-vs-orcai-mj.json"]
+    assert len(sent["attachments"]) == 1
+    assert body["report_status"]["recipient"] == LEAGUE_ADDRESS
+
+
+def test_amireman_friendly_never_to_lecturer_counted_never_to_team(tmp_path):
+    friendly = _amireman_peer(tmp_path / "f", mode="friendly",
+                              game_id_override="TEST22")
+    friendly._compute_ids(); friendly.rows = _draw_rows()
+    friendly.build_spec_result()
+    assert friendly.sent_emails[0]["recipient"] != LEAGUE_ADDRESS
+
+    counted = _amireman_peer(tmp_path / "c", mode="counted",
+                             game_id_override="G1")
+    counted._compute_ids(); counted.rows = [_row(1, "police", "capture", "police", 20, 5)]
+    counted.build_spec_result()
+    assert counted.sent_emails[0]["recipient"] != AMIREMAN_FRIENDLY_RECIPIENT
+
+
+def test_amireman_intermediate_artifacts_exist_but_are_not_attached(tmp_path):
+    """Local declaration/config/log files may exist; only the result is attached."""
+    for name in ("declaration_TEST22.json", "config_TEST22_g01.json",
+                 "log_TEST22_g01.json", "log_TEST22_g02.json"):
+        (tmp_path / name).write_text("{}", encoding="utf-8")
+    peer = _amireman_peer(tmp_path, mode="friendly", game_id_override="TEST22")
+    peer._compute_ids()
+    peer.rows = _draw_rows()
+    peer.build_spec_result()
+
+    assert peer.sent_emails[0]["attachments"] == ["result_TEST22.json"]
+    # the intermediate artifacts are still present locally, just not emailed
+    for name in ("declaration_TEST22.json", "config_TEST22_g01.json",
+                 "log_TEST22_g01.json", "log_TEST22_g02.json"):
+        assert (tmp_path / name).exists()
+
+
+def test_amireman_duplicate_invocation_sends_once(tmp_path):
+    """One completed series cannot send twice (sentinel guard)."""
+    peer = _amireman_peer(tmp_path, mode="friendly", game_id_override="TEST22")
+    peer._compute_ids()
+    peer.rows = _draw_rows()
+
+    first = peer.build_spec_result()
+    second = peer.build_spec_result()
+
+    assert len(peer.sent_emails) == 1                    # only ONE real send
+    assert first["report_status"]["status"] == "sent"
+    assert second["report_status"]["status"] == "duplicate_suppressed"
+    assert (tmp_path / "amireman_report_sent_TEST22.lock").exists()
+
+
+def test_ahk_yosi_friendly_reporting_still_suppressed(tmp_path):
+    """ahk-yosi reporting is UNCHANGED: friendly never constructs a sender."""
+    import sys as _sys
+    peer = ReferenceSeriesPeer(
+        natural_role="police", config=amireman_config(),
+        opponent_url="http://127.0.0.1:1/mcp", my_port=1, mode="friendly",
+        spec_profile="ahk-yosi", out_dir=str(tmp_path), log_fn=lambda *a: None)
+    # Poison the email module: ahk-yosi friendly must succeed without touching it.
+    saved = _sys.modules.get("police_thief.infra.email_sender")
+    _sys.modules["police_thief.infra.email_sender"] = None
+    try:
+        receipt = peer.dispatch_report({"series_winner": "police"})
+    finally:
+        if saved is not None:
+            _sys.modules["police_thief.infra.email_sender"] = saved
+        else:
+            _sys.modules.pop("police_thief.infra.email_sender", None)
+    assert "suppressed" in receipt["status"] and "friendly" in receipt["status"]
