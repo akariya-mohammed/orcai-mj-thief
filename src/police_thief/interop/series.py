@@ -1,4 +1,4 @@
-"""Six-sub-game networked series in the reference dialect.
+﻿"""Six-sub-game networked series in the reference dialect.
 
 One `ReferenceSeriesPeer` is a full autonomous peer: MCP server (negotiate /
 receive_turn / submit_audit / receive_control), outbound RefLink, role
@@ -9,7 +9,7 @@ separation.
 
 Timing contract (matches the opponent's measured windows, RUNBOOK 3b):
 after a sub-game ends we send our audit package immediately, wait at most
-AUDIT_WAIT (20 s) for theirs, then re-negotiate — their peer allows ~60 s for
+AUDIT_WAIT (20 s) for theirs, then re-negotiate â€” their peer allows ~60 s for
 our agreement to arrive.
 """
 from __future__ import annotations
@@ -52,8 +52,8 @@ SCHEMA_VERSION = "1.2"
 # never cross over (a friendly must never reach the lecturer, and vice-versa).
 AMIREMAN_FRIENDLY_RECIPIENT = "judekhleif@gmail.com"
 
-# NajAmjad §7.4: counted goes to the lecturer from each team separately;
-# friendlies go to the two teams ONLY — never the lecturer. Dispatch itself
+# NajAmjad Â§7.4: counted goes to the lecturer from each team separately;
+# friendlies go to the two teams ONLY â€” never the lecturer. Dispatch itself
 # lives in the POST-MATCH aggregator (interop/najamjad_report.py); the
 # gameplay peer never emails for this profile.
 NAJAMJAD_FRIENDLY_RECIPIENT = najamjad_mod.FRIENDLY_RECIPIENT
@@ -100,7 +100,7 @@ class SubGame:
         self.belief = BeliefGrid(size, config.get("belief.smell_trust_weight", 4.0))
         scent_cls = (najamjad_mod.KernelScentGrid
                      if spec_profile == "najamjad" else ScentGrid)
-        # NajAmjad §4.0: the A2 kernel must go on the wire cell-for-cell —
+        # NajAmjad Â§4.0: the A2 kernel must go on the wire cell-for-cell â€”
         # the exact registered table with max-merge, never our Gaussian fit.
         # initial_field is empty for EVERY agreed window, first attempt or
         # re-offer, because each attempt constructs a fresh SubGame.
@@ -169,9 +169,9 @@ class SubGame:
         self.my_steps = step
 
         if self.spec_profile == "najamjad":
-            # Serve order per their §4.0.1 (the kit's field_walk): age the
+            # Serve order per their Â§4.0.1 (the kit's field_walk): age the
             # PRIOR trail first, merge the fresh deposit at FULL strength,
-            # then transmit — the packet's peak is always 0.90 on the cell we
+            # then transmit â€” the packet's peak is always 0.90 on the cell we
             # occupy and every older cell already carries this turn's decay.
             self.scent.decay_all()
             self.scent.deposit(self.state.position)
@@ -187,8 +187,8 @@ class SubGame:
         if self.my_role == POLICE:
             if self.spec_profile == "amireman":
                 # Spec Section 5: the Cop declares a capture-claim for its own
-                # post-move cell on EVERY Cop turn — including STAY and barrier
-                # turns — with no gating and never chosen by strategy.
+                # post-move cell on EVERY Cop turn â€” including STAY and barrier
+                # turns â€” with no gating and never chosen by strategy.
                 capture_claim = list(self.state.position)
             elif decision.move_type is MoveType.MOVE and \
                     tuple(self.state.position) == tuple(self.belief.most_likely()):
@@ -214,7 +214,7 @@ class SubGame:
         return message
 
     def courtesy_flush(self) -> dict | None:
-        """The answer we still owe after a terminal turn — re-sent on a copy of
+        """The answer we still owe after a terminal turn â€” re-sent on a copy of
         our last message (the reference deliver_verdict convention)."""
         if not self.owed_claim_response:
             return None
@@ -242,11 +242,11 @@ class SubGame:
                 if (self.spec_profile == "najamjad" and self.my_role == THIEF
                         and tuple(parsed["barrier"]) == tuple(self.state.position)):
                     # NajAmjad Barrier Law: a barrier NEVER goes on the cell
-                    # the thief occupies. Not a capture for this opponent — a
+                    # the thief occupies. Not a capture for this opponent â€” a
                     # violation we record, and we do not apply the wall.
                     self.violations.append(
                         f"opponent declared a barrier on our occupied cell "
-                        f"{parsed['barrier']} — forbidden by the agreed "
+                        f"{parsed['barrier']} â€” forbidden by the agreed "
                         f"Barrier Law; not applied")
                 else:
                     refusal = accept_barrier(self.state, tuple(parsed["barrier"]),
@@ -267,18 +267,18 @@ class SubGame:
                 enclosed = not self.state.board.legal_moves(self.state.position)
                 if self.spec_profile == "najamjad":
                     # NajAmjad: barrier-on-cell is never legal (handled above),
-                    # so ONLY rule 47 (no legal orthogonal move) captures us —
+                    # so ONLY rule 47 (no legal orthogonal move) captures us â€”
                     # and we truthfully concede on our own next answer.
                     on_barrier = False
                 if on_barrier or enclosed:
                     # Rules #46/#47: we are captured. The reference wire has no
                     # sealed confession, but an unprompted truthful
                     # claim_response ends the opponent's game as a capture
-                    # (their bridge accepts it as an unsealed answer) — the
+                    # (their bridge accepts it as an unsealed answer) â€” the
                     # honest, converging channel. Never claim survival now.
                     self.captured = True
                     cause = ("barrier onto our cell" if on_barrier
-                             else "enclosed — no legal move")
+                             else "enclosed â€” no legal move")
                     self.owed_claim_response = {
                         "claim": list(self.state.position), "caught": True}
                     self.outcome = {"ending": CAPTURE, "winner": POLICE,
@@ -330,7 +330,7 @@ class SubGame:
     def accept_result_claim(self, claim: str) -> None:
         """The opponent's audit package arrived mid-game: in the reference
         dialect a barrier-capture ending has NO turn-message channel (measured
-        live vs p2p_pursuit 2026-08-12) — the audit package IS the terminal
+        live vs p2p_pursuit 2026-08-12) â€” the audit package IS the terminal
         signal. Adopt the claimed result when it is consistent with local truth,
         else record the disagreement as a technical ending.
         """
@@ -398,12 +398,12 @@ class ReferenceSeriesPeer:
             hw = detailed_hardware_spec()
         if spec_profile == "najamjad" and hw is not None:
             hw = najamjad_mod.sanitize_hardware_spec(hw)
-        # -- NajAmjad split-process mode (their §3) --------------------------
+        # -- NajAmjad split-process mode (their Â§3) --------------------------
         # This process plays ONLY its repo's fixed role: cop repo -> police
         # windows against their thief door, thief repo -> thief windows
         # against their cop door. first_window_role is OUR TEAM's role in
-        # window 1 (their §1: NajAmjad open as thief, so ours defaults to
-        # police). Timing follows their §3.1 table; the window patience is
+        # window 1 (their Â§1: NajAmjad open as thief, so ours defaults to
+        # police). Timing follows their Â§3.1 table; the window patience is
         # WALL CLOCK, not an attempt count.
         self.first_window_role = first_window_role
         if spec_profile == "najamjad":
@@ -422,7 +422,7 @@ class ReferenceSeriesPeer:
             prior_counted_games=prior_counted_games,
             git_commit_hash=git_commit_hash, hardware_spec=hw)
         if spec_profile == "najamjad":
-            # Two REAL doors, one per role (their §3): the identity must name
+            # Two REAL doors, one per role (their Â§3): the identity must name
             # BOTH our endpoints so their per-role retargeting can dial the
             # right process. Each process's own URL comes from --mcp-url; the
             # sibling's from the private [network] config when declared.
@@ -435,7 +435,7 @@ class ReferenceSeriesPeer:
                 if net.get(cfg_key):
                     servers[key] = net[cfg_key]
             self.identity["mcp_servers"] = servers
-            # NajAmjad wire field for counted game history (their §6 / §9.8).
+            # NajAmjad wire field for counted game history (their Â§6 / Â§9.8).
             # Value = number of counted series completed BEFORE this one.
             self.identity["counted_games_played"] = prior_counted_games
         self.their_identity: dict = {}
@@ -449,7 +449,7 @@ class ReferenceSeriesPeer:
 
     # -- lifecycle -------------------------------------------------------------
     def _najamjad_negotiate_responder(self, message: dict) -> dict:
-        """Server-thread reply to an inbound negotiate (NajAmjad §3.1).
+        """Server-thread reply to an inbound negotiate (NajAmjad Â§3.1).
 
         Mid-game -> the retriable busy refusal (their exact convention). A
         ``sub_game_number`` naming a window other than the one we are opening
@@ -518,7 +518,7 @@ class ReferenceSeriesPeer:
         """A new sub-game opens with the thief's step 1; anything else queued at
         the boundary is a stale terminal flush from the previous sub-game.
         A queued audit package is likewise last sub-game's (arrived after our
-        wait window) — dropping it here keeps it from reading as a terminal
+        wait window) â€” dropping it here keeps it from reading as a terminal
         signal for the new sub-game."""
         while not self.inbox.audits.empty():
             self.inbox.audits.get_nowait()
@@ -589,36 +589,46 @@ class ReferenceSeriesPeer:
         deadline = time.monotonic() + self.turn_timeout
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
-            if not self.inbox.audits.empty():
-                # Their audit package IS the end-of-sub-game signal for endings
-                # the reference wire cannot carry (barrier capture). Adopt it
-                # and requeue the package for the audit exchange step.
+
+            # NajAmjad terminal-boundary ordering:
+            # the peer may send the final turn and its audit almost
+            # simultaneously. Give an already/in-flight turn priority before
+            # treating the audit as the end-of-sub-game signal.
+            try:
+                raw = self.inbox.turns.get(
+                    timeout=min(2.0, max(0.1, remaining)))
+            except queue.Empty:
+                raw = None
+
+            if raw is None and not self.inbox.audits.empty():
                 package = self.inbox.audits.get_nowait()
                 if self._is_stale_audit_copy(package, engine.n):
-                    # NajAmjad §5: reveals are re-sent up to three times per
-                    # window, byte-identical. A straggler copy of the LAST
-                    # window's package must never terminate THIS window.
                     continue
-                engine.accept_result_claim(str(package.get("result_claim", "")))
+                engine.accept_result_claim(
+                    str(package.get("result_claim", "")))
                 self.inbox.audits.put(package)
                 return None
-            try:
-                raw = self.inbox.turns.get(timeout=min(2.0, max(0.1, remaining)))
-            except queue.Empty:
+
+            if raw is None:
                 continue
+
             try:
-                parsed = wire.parse_turn(raw, grid_size=engine.state.board.grid_size)
+                parsed = wire.parse_turn(
+                    raw, grid_size=engine.state.board.grid_size)
             except ProtocolViolation as exc:
                 engine.violations.append(str(exc))
                 continue
+
             if parsed["sender"] == engine.my_role:
                 engine.declare_technical(
                     f"both peers claim role {engine.my_role!r}")
                 return None
-            return parsed
-        engine.declare_technical(f"turn timeout ({self.turn_timeout:.0f}s)")
-        return None
 
+            return parsed
+
+        engine.declare_technical(
+            f"turn timeout ({self.turn_timeout:.0f}s)")
+        return None
     # -- audit + artifacts -------------------------------------------------------
     def _is_stale_audit_copy(self, package: dict, current_n: int) -> bool:
         """Repeated-audit tolerance (NajAmjad profile only).
@@ -644,7 +654,7 @@ class ReferenceSeriesPeer:
         package = {"sender": engine.my_role, "records": engine.records,
                    "result_claim": ending}
         if self.spec_profile == "najamjad":
-            # Index keys they explicitly welcome (§5): they file reveals by
+            # Index keys they explicitly welcome (Â§5): they file reveals by
             # window, not by arrival time, and their AuditPayload is tolerant.
             package["sub_game"] = n
             package["sub_game_number"] = n
@@ -664,7 +674,7 @@ class ReferenceSeriesPeer:
             except queue.Empty:
                 break
             if self._is_stale_audit_copy(candidate, n):
-                continue                    # tolerated straggler copy — keep waiting
+                continue                    # tolerated straggler copy â€” keep waiting
             theirs = candidate
         if theirs is not None and self.spec_profile == "najamjad":
             try:
@@ -914,7 +924,7 @@ class ReferenceSeriesPeer:
         self.log(f"[{self.natural_role}] declaration written -> {path.name}")
 
     def _write_config_artifact(self, n: int) -> None:
-        """Write config_{game_id}_g{NN}.json — the agreed terms for sub-game n."""
+        """Write config_{game_id}_g{NN}.json â€” the agreed terms for sub-game n."""
         shared = self.config.shared
         config_sha256 = digest(shared)
         artifact: dict = {"_schema": "police_thief_p2p_config_v1.2"}
@@ -955,7 +965,7 @@ class ReferenceSeriesPeer:
     # -- series --------------------------------------------------------------
     def reset_for_next_series(self) -> None:
         """Drain per-series state so run_series() can be called again.
-        The MCP server thread is NOT restarted — it keeps serving across resets.
+        The MCP server thread is NOT restarted â€” it keeps serving across resets.
         """
         import queue as _queue
         for q in (self.inbox.agreements, self.inbox.turns, self.inbox.audits):
@@ -1001,7 +1011,7 @@ class ReferenceSeriesPeer:
         our_group = self.identity.get("group_id", "orcai-mj")
         their_group = self.their_identity.get("group_id", "opponent")
         if self.spec_profile == "najamjad":
-            # Their §6 is byte-identical to the Appendix-B recipe: sorted pair,
+            # Their Â§6 is byte-identical to the Appendix-B recipe: sorted pair,
             # game_uid from the FIRST 16 RAW bytes of sha256(canonical(terms)
             # + "|" + "|".join(pair)). Derivable before any handshake because
             # both group ids are fixed for this opponent.
@@ -1168,7 +1178,7 @@ class ReferenceSeriesPeer:
             if accepted:
                 peer_sha = env["consensus_sha"]
                 break
-            # Straggler per-sub-game audit (no valid consensus_sha) — skip it.
+            # Straggler per-sub-game audit (no valid consensus_sha) â€” skip it.
         rows_present = bool(self.rows)
         results_agreed = rows_present and all(r.get("result_agreed") for r in self.rows)
         logs_verified = rows_present and all(r.get("log_verified") for r in self.rows)
@@ -1310,7 +1320,7 @@ class ReferenceSeriesPeer:
         return body
 
     def _new_gmail_sender(self):
-        """Construct the Gmail sender — a seam tests replace with a fake so no
+        """Construct the Gmail sender â€” a seam tests replace with a fake so no
         real email is ever sent during testing."""
         from police_thief.infra.email_sender import GmailSender
         return GmailSender(self.config)
@@ -1363,7 +1373,7 @@ class ReferenceSeriesPeer:
             "consensus_delivered": False,
         }
 
-    # -- NajAmjad profile: split two-process series (their §3 / §3.1) ----------
+    # -- NajAmjad profile: split two-process series (their Â§3 / Â§3.1) ----------
     def negotiate_window_najamjad(self, n: int) -> tuple[bool, str]:
         """Open window ``n``: fresh signed terms, ``sub_game_number`` riding on
         every negotiate, busy refusals retried without burning budget, bounded
@@ -1382,8 +1392,8 @@ class ReferenceSeriesPeer:
                     agreement, timeout=najamjad_mod.HANDSHAKE_REPLY)
                 delivered = True
                 if najamjad_mod.is_busy_refusal(response):
-                    # "Ask again in a moment" — retriable, costs no budget
-                    # beyond the wall clock (their §3.1).
+                    # "Ask again in a moment" â€” retriable, costs no budget
+                    # beyond the wall clock (their Â§3.1).
                     time.sleep(backoff)
                     backoff = min(backoff * 2, najamjad_mod.BACKOFF_CEILING)
                     continue
@@ -1424,10 +1434,10 @@ class ReferenceSeriesPeer:
                 continue
             if theirs.get("scent_model_sha256") is None:
                 self.log(f"[{self.natural_role}] window {n}: peer declared no "
-                         f"scent model; we run A2 — flagged, not fatal")
+                         f"scent model; we run A2 â€” flagged, not fatal")
             if not delivered:
                 # We adopted the agreement they pushed while our own outbound
-                # was failing — deliver ours late rather than skip it (§3.1).
+                # was failing â€” deliver ours late rather than skip it (Â§3.1).
                 try:
                     self.link.negotiate(agreement,
                                         timeout=najamjad_mod.HANDSHAKE_REPLY)
@@ -1470,7 +1480,7 @@ class ReferenceSeriesPeer:
                 break
             if attempt < najamjad_mod.REOFFER_LIMIT:
                 self.log(f"[{self.natural_role}] window {n}: transport failure "
-                         f"({cause}) — re-offering the SAME number")
+                         f"({cause}) â€” re-offering the SAME number")
         self._current_window = None
         return row
 
@@ -1478,9 +1488,9 @@ class ReferenceSeriesPeer:
         """Persist one played window as this process's OWN immutable artifact.
 
         Written into this process's own role-owned output directory ONLY. The
-        sibling role process never reads it (project §2.4.2: the two agents
-        share no state); the POST-MATCH aggregator — a separate step the
-        launcher runs after the whole series has finished — is the only
+        sibling role process never reads it (project Â§2.4.2: the two agents
+        share no state); the POST-MATCH aggregator â€” a separate step the
+        launcher runs after the whole series has finished â€” is the only
         reader that ever merges the two roles' artifacts.
         """
         self.out_dir.mkdir(parents=True, exist_ok=True)
@@ -1499,15 +1509,15 @@ class ReferenceSeriesPeer:
         """Split-process series: this process plays ONLY its own windows and
         touches ONLY its own role-owned artifacts.
 
-        Strict agent separation (project §2.4.2): no shared files, memory,
-        IPC or polling between our cop and thief processes — synchronisation
+        Strict agent separation (project Â§2.4.2): no shared files, memory,
+        IPC or polling between our cop and thief processes â€” synchronisation
         happens purely through the per-window handshake with the OPPONENT
         (busy refusals + retries). The six-row team report is assembled later
         by the POST-MATCH aggregator (``police-thief najamjad-report``),
         which the launcher runs only after the whole series has finished.
         """
-        najamjad_mod.verify_terms(self.terms)          # fail loudly (their §1)
-        najamjad_mod.verify_commit_vector()            # golden vector (their §5)
+        najamjad_mod.verify_terms(self.terms)          # fail loudly (their Â§1)
+        najamjad_mod.verify_commit_vector()            # golden vector (their Â§5)
         self.game_started_at = datetime.now(UTC).isoformat()
         self._compute_ids()
         self.log(f"[{self.natural_role}] najamjad game_id={self.game_id} "
@@ -1522,10 +1532,10 @@ class ReferenceSeriesPeer:
         return self.build_najamjad_role_result()
 
     def build_najamjad_role_result(self) -> dict:
-        """This ROLE's partial result — its own windows only, nothing merged.
+        """This ROLE's partial result â€” its own windows only, nothing merged.
 
         Deliberately contains no sibling data, computes no team mutual digest
-        and sends no email: the six-row team report, the §7.2 signature and
+        and sends no email: the six-row team report, the Â§7.2 signature and
         the single dispatch belong to the POST-MATCH aggregator
         (``interop/najamjad_report.py``), which runs only after the series.
         """
@@ -1613,7 +1623,7 @@ class ReferenceSeriesPeer:
         path.write_text(json.dumps(body, indent=2, ensure_ascii=False),
                         encoding="utf-8")
         self.log(f"[{self.natural_role}] najamjad role windows done: "
-                 f"{body['windows_played']} clean={clean} — team report "
+                 f"{body['windows_played']} clean={clean} â€” team report "
                  f"deferred to the post-match aggregator")
         return body
 
@@ -1622,9 +1632,9 @@ class ReferenceSeriesPeer:
         """FRIENDLY mode structurally cannot send email. Counted sends only when
         all audits pass and the report has not already been sent (sentinel guard)."""
         if self.mode != COUNTED:
-            return {"status": "suppressed (friendly mode — no email, no report)"}
+            return {"status": "suppressed (friendly mode â€” no email, no report)"}
         if not result.get("all_audits_verified"):
-            return {"status": "suppressed (audit failures — all audits must pass)"}
+            return {"status": "suppressed (audit failures â€” all audits must pass)"}
         sentinel = self.out_dir / f"report_sent_{self.natural_role}.lock"
         if sentinel.exists():
             return {"status": "duplicate_suppressed", "sentinel": str(sentinel)}
@@ -1652,3 +1662,4 @@ class ReferenceSeriesPeer:
         if report.get("status") == "sent":
             sentinel.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
         return report
+
