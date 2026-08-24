@@ -62,8 +62,8 @@ SCENT_MODEL_SHA256 = \
 THEIR_COP_URL = "https://cop.4laboratory.com/mcp"
 THEIR_THIEF_URL = "https://thief.4laboratory.com/mcp"
 
-#: §7.4 friendly recipient — the TEAM address, never the lecturer.
-FRIENDLY_RECIPIENT = "judekhleif@gmail.com"
+#: §7.4 friendly recipient — BOTH team addresses (ours + NajAmjad), never the lecturer.
+FRIENDLY_RECIPIENT = "jude021003@gmail.com, najikayal4@gmail.com"
 
 # -- timing policy (their §3.1 table), NajAmjad profile only ------------------
 TURN_WAIT = 60.0           # our per-turn silence watchdog (they take <= 30 s)
