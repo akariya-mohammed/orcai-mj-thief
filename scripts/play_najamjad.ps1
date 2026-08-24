@@ -7,23 +7,28 @@
   NajAmjad (NAJAMJAD_MATCH_TERMS.md). It NEVER touches the ahk-yosi or
   amireman constitutions, gates, artifacts or private configs.
 
-  NajAmjad-specific topology (their SS3): the series ALWAYS runs as TWO real
-  processes out of two repositories —
+  NajAmjad topology (their SS3) under STRICT agent separation (project
+  SS2.4.2): the series ALWAYS runs as TWO real processes out of two
+  repositories —
       our COP  process (orcai-mj-cop,   police windows) -> THEIR THIEF door
       our THIEF process (orcai-mj-thief, thief windows) -> THEIR COP door
-  Both processes share ONE artifacts directory (absolute path) so the two
-  half-series merge into a single six-row report. Both stay up for the whole
-  series; per-window handshakes and busy retries synchronise them.
+  Each process writes ONLY its own role-owned artifacts directory inside its
+  own repo; the two processes share NO files, memory or IPC and synchronise
+  purely through the per-window handshake with the opponent. Both stay up
+  for the whole series.
 
-  Defaults: their permanent named tunnels
-      cop   https://cop.4laboratory.com/mcp
-      thief https://thief.4laboratory.com/mcp
-  and OUR team is police in window 1 (they open as thief, their SS1).
+  POST-MATCH AGGREGATION: only after this launcher observes that BOTH
+  processes have finalized their partial results does it stop them and run
+      police-thief najamjad-report
+  which merges the two finalized artifact sets into the one six-row team
+  report, computes the mutual digest and (friendly: team only / counted:
+  lecturer only) dispatches the single email. The aggregator is reporting
+  only — it feeds nothing back into gameplay.
 
   Modes: local | friendly | counted. Counted is triple-gated (passed najamjad
-  friendly gate, P2P_CONFIRM_COUNTED=YES, and a typed confirmation).
-  local runs a loopback self-play of the FULL split topology with four peers
-  (our two real peers + two "najamjad local sim" peers from the same repos).
+  friendly gate in both repos, P2P_CONFIRM_COUNTED=YES, typed confirmation).
+  local runs a loopback rehearsal of the FULL split topology with four peers
+  and two independent aggregations, with email hard-disabled.
 
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File scripts\play_najamjad.ps1 local
@@ -73,11 +78,13 @@ $CopRepo = Join-Path $Base "orcai-mj-cop"
 $ThiefRepo = Join-Path $Base "orcai-mj-thief"
 $RunStamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $LogDir = Join-Path $Base ("match-logs\najamjad-" + $RunStamp)
-# ONE shared artifacts directory (absolute) for BOTH processes — the row files
-# row_<game_id>_gNN.json written here are how the two half-series merge.
-$SharedOut = Join-Path $LogDir "artifacts"
+# ROLE-OWNED artifact directories — one per repo, NEVER shared between the
+# two gameplay processes (project SS2.4.2). The aggregator reads both only
+# after the series has ended.
+$CopOut = Join-Path $CopRepo ("artifacts\najamjad\" + $RunStamp)
+$ThiefOut = Join-Path $ThiefRepo ("artifacts\najamjad\" + $RunStamp)
+$TeamReportDir = Join-Path $LogDir "team-report"
 New-Item -ItemType Directory -Force $LogDir | Out-Null
-New-Item -ItemType Directory -Force $SharedOut | Out-Null
 
 function Log($msg) { Write-Host "[najamjad-launcher] $msg" }
 
@@ -158,30 +165,41 @@ function Stop-Quiet($proc) {
     if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
 }
 
-function Wait-ResultArtifacts([string]$outDir, [int]$games, [int]$timeoutMinutes, [datetime]$runStart, [int]$expected = 2) {
+function Wait-RolePartial([string]$roleDir, [string]$role, [int]$timeoutMinutes, [datetime]$runStart) {
+    # A role process is DONE when its own partial result exists and covers all
+    # of its own windows. The launcher observes; the processes never do.
     $deadline = (Get-Date).AddMinutes($timeoutMinutes)
     while ($true) {
-        if ((Get-Date) -gt $deadline) { throw "timeout waiting for najamjad result artifacts after $timeoutMinutes minutes" }
+        if ((Get-Date) -gt $deadline) { throw "timeout waiting for the $role partial result after $timeoutMinutes minutes" }
         Start-Sleep -Seconds 10
-        $results = @(Get-ChildItem $outDir -Filter "result_*-vs-*_*.json" -ErrorAction SilentlyContinue |
-                     Where-Object { $_.LastWriteTime -gt $runStart })
-        if ($results.Count -ge $expected) {
-            $ok = $true
-            foreach ($f in $results) {
-                try { $res = Get-Content $f.FullName -Raw | ConvertFrom-Json }
-                catch { $ok = $false; break }
-                if (-not ($res -and ($res.num_sub_games -eq $games))) { $ok = $false }
-            }
-            if ($ok) { return $results }
-        }
+        $hit = Get-ChildItem $roleDir -Filter "result_*_$role.json" -ErrorAction SilentlyContinue |
+               Where-Object { $_.LastWriteTime -gt $runStart } |
+               Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if (-not $hit) { continue }
+        try { $res = Get-Content $hit.FullName -Raw | ConvertFrom-Json } catch { continue }
+        if ($res -and ($res.num_sub_games -eq $res.windows_expected)) { return $res }
     }
+}
+
+function Invoke-Aggregator([string]$copDir, [string]$thiefDir, [string]$outDir, [string]$mode) {
+    # POST-MATCH ONLY: runs after both gameplay processes have finished.
+    $aggArgs = $UvPre + @(
+        "run", "police-thief", "najamjad-report",
+        "--cop-dir", $copDir, "--thief-dir", $thiefDir,
+        "--out", $outDir, "--mode", $mode, "--games", "$Games")
+    Push-Location $CopRepo
+    try { $lines = & $UvExe $aggArgs 2>&1 }
+    finally { Pop-Location }
+    $json = $lines | Where-Object { "$_" -like "{*" } | Select-Object -Last 1
+    if (-not $json) { throw "aggregator produced no status output: $lines" }
+    return ("$json" | ConvertFrom-Json)
 }
 
 function Assert-NoEmailArtifacts {
     # Friendly may mail the TEAM address only; what must never exist here is a
     # drafted/queued message (.eml) aimed anywhere else. The lecturer wall is
-    # enforced (and tested) in the peer's dispatch code.
-    $sent = @(Get-ChildItem -Recurse -Path $CopRepo, $ThiefRepo, $SharedOut -Filter "*.eml" -ErrorAction SilentlyContinue |
+    # enforced (and tested) in the aggregator's dispatch code.
+    $sent = @(Get-ChildItem -Recurse -Path $CopRepo, $ThiefRepo, $LogDir -Filter "*.eml" -ErrorAction SilentlyContinue |
               Where-Object { $_.LastWriteTime -gt (Get-Date).AddHours(-2) })
     if ($sent.Count -gt 0) {
         throw "email draft artifacts appeared during a najamjad friendly/local run"
@@ -199,9 +217,6 @@ function Write-NajamjadGate($passed, $detail) {
         $gateJson | Out-File -Encoding utf8 $gatePath
         Log "najamjad friendly gate written: $gatePath (passed=$passed)"
     }
-    # The peer's counted gate check reads Split-Path(--out)\<gate>; the shared
-    # out dir lives outside the repos, so mirror the gate beside it too.
-    $gateJson | Out-File -Encoding utf8 (Join-Path (Split-Path -Parent $SharedOut) $GateName)
 }
 
 # ================================================================= modes
@@ -209,39 +224,44 @@ Assert-Repo $CopRepo
 Assert-Repo $ThiefRepo
 
 if ($Mode -eq "local") {
-    # Rehearsal: no email of any kind, ever (inherited by all four peers).
+    # Rehearsal: no email of any kind, ever (inherited by all four peers and
+    # by both aggregations).
     $env:P2P_EMAIL_DISABLE = "1"
     # Full split-topology rehearsal: four peers, two "teams", loopback only.
+    # Every peer gets its OWN role-owned artifacts directory.
     #   Team A (real configs):  A-cop 1/3/5 police  |  A-thief 2/4/6 thief
     #   Team B (local sim):     B-thief 1/3/5 thief |  B-cop   2/4/6 police
     $pA_cop = Get-FreePort; $pA_thief = Get-FreePort
     $pB_cop = Get-FreePort; $pB_thief = Get-FreePort
-    $outA = Join-Path $LogDir "artifacts-teamA"
-    $outB = Join-Path $LogDir "artifacts-teamB"
-    New-Item -ItemType Directory -Force $outA, $outB | Out-Null
+    $outAcop = Join-Path $CopRepo   ("artifacts\najamjad\" + $RunStamp + "-A")
+    $outAthief = Join-Path $ThiefRepo ("artifacts\najamjad\" + $RunStamp + "-A")
+    $outBcop = Join-Path $CopRepo   ("artifacts\najamjad\" + $RunStamp + "-B")
+    $outBthief = Join-Path $ThiefRepo ("artifacts\najamjad\" + $RunStamp + "-B")
     $peers = @(
-        @{ Tag = "A-cop";   Out = $outA; Process = (Start-NajamjadPeer $CopRepo  "police" $pA_cop   "http://127.0.0.1:$pB_thief/mcp" "friendly" $outA $null $CopGitCommit  "police" $null "A-cop") },
-        @{ Tag = "A-thief"; Out = $outA; Process = (Start-NajamjadPeer $ThiefRepo "thief"  $pA_thief "http://127.0.0.1:$pB_cop/mcp"   "friendly" $outA $null $ThiefGitCommit "police" $null "A-thief") },
-        @{ Tag = "B-cop";   Out = $outB; Process = (Start-NajamjadPeer $CopRepo  "police" $pB_cop   "http://127.0.0.1:$pA_thief/mcp" "friendly" $outB $null $CopGitCommit  "thief" "config/najamjad/local_opponent_police.toml" "B-cop") },
-        @{ Tag = "B-thief"; Out = $outB; Process = (Start-NajamjadPeer $ThiefRepo "thief"  $pB_thief "http://127.0.0.1:$pA_cop/mcp"   "friendly" $outB $null $ThiefGitCommit "thief" "config/najamjad/local_opponent_thief.toml" "B-thief") }
+        @{ Tag = "A-cop";   Process = (Start-NajamjadPeer $CopRepo  "police" $pA_cop   "http://127.0.0.1:$pB_thief/mcp" "friendly" $outAcop $null $CopGitCommit  "police" $null "A-cop") },
+        @{ Tag = "A-thief"; Process = (Start-NajamjadPeer $ThiefRepo "thief"  $pA_thief "http://127.0.0.1:$pB_cop/mcp"   "friendly" $outAthief $null $ThiefGitCommit "police" $null "A-thief") },
+        @{ Tag = "B-cop";   Process = (Start-NajamjadPeer $CopRepo  "police" $pB_cop   "http://127.0.0.1:$pA_thief/mcp" "friendly" $outBcop "config/najamjad/local_opponent_police.toml" $CopGitCommit "thief" "B-cop") },
+        @{ Tag = "B-thief"; Process = (Start-NajamjadPeer $ThiefRepo "thief"  $pB_thief "http://127.0.0.1:$pA_cop/mcp"   "friendly" $outBthief "config/najamjad/local_opponent_thief.toml" $ThiefGitCommit "thief" "B-thief") }
     )
     $runStart = Get-Date
     try {
-        $resultsA = Wait-ResultArtifacts $outA $Games 45 $runStart 2
-        $resultsB = Wait-ResultArtifacts $outB $Games 45 $runStart 2
+        Wait-RolePartial $outAcop "police" 45 $runStart | Out-Null
+        Wait-RolePartial $outAthief "thief" 45 $runStart | Out-Null
+        Wait-RolePartial $outBcop "police" 45 $runStart | Out-Null
+        Wait-RolePartial $outBthief "thief" 45 $runStart | Out-Null
     } finally { $peers | ForEach-Object { Stop-Quiet $_.Process } }
+    # POST-MATCH aggregation, one per simulated team, gameplay fully over.
+    $aggA = Invoke-Aggregator $outAcop $outAthief (Join-Path $LogDir "team-A") "friendly"
+    $aggB = Invoke-Aggregator $outBcop $outBthief (Join-Path $LogDir "team-B") "friendly"
     Assert-NoEmailArtifacts
-    $shas = @()
-    foreach ($f in ($resultsA + $resultsB)) {
-        $res = Get-Content $f.FullName -Raw | ConvertFrom-Json
-        $shas += $res.mutual_agreement.sha256
-        Log "$($f.Name): mutual sha $($res.mutual_agreement.sha256.Substring(0,12))... winner=$($res.series_winner)"
-    }
-    if (($shas | Select-Object -Unique).Count -eq 1) {
-        Log "LOCAL NAJAMJAD SPLIT SERIES: PASS (all four peers agree on the mutual digest)"
+    Log "team A: status=$($aggA.status) mutual=$($aggA.mutual_sha256)"
+    Log "team B: status=$($aggB.status) mutual=$($aggB.mutual_sha256)"
+    if (($aggA.status -eq "ok") -and ($aggB.status -eq "ok") -and
+        ($aggA.mutual_sha256 -eq $aggB.mutual_sha256) -and $aggA.mutual_sha256) {
+        Log "LOCAL NAJAMJAD SPLIT SERIES: PASS (both teams' aggregators agree on the mutual digest)"
         exit 0
     }
-    Log "LOCAL NAJAMJAD SPLIT SERIES: FAIL - mutual digests differ, inspect $LogDir"
+    Log "LOCAL NAJAMJAD SPLIT SERIES: FAIL - inspect $LogDir"
     exit 1
 }
 
@@ -253,17 +273,15 @@ if ($Mode -eq "counted") {
         $gate = Get-Content $gatePath -Raw | ConvertFrom-Json
         if (-not $gate.passed) { throw "najamjad friendly gate exists but did not pass ($gatePath)" }
     }
-    # The peer validates Split-Path(--out)\<gate>; this run's shared out dir is
-    # freshly stamped, so mirror the (validated) gate beside it.
-    Copy-Item (Join-Path (Join-Path $CopRepo "artifacts") $GateName) (Join-Path $LogDir $GateName) -Force
     $typed = Read-Host "Type START COUNTED MATCH to proceed"
     if ($typed -ne "START COUNTED MATCH") { throw "counted match not confirmed" }
 }
 
-# friendly / counted: TWO processes, one per repo, per-role opponent doors.
+# friendly / counted: TWO processes, one per repo, per-role opponent doors,
+# per-repo role-owned artifact directories.
 $plan = @(
-    @{ Repo = $CopRepo;   Role = "police"; Tag = "cop";   Commit = $CopGitCommit;  Opp = $CopOpponentUrl },
-    @{ Repo = $ThiefRepo; Role = "thief";  Tag = "thief"; Commit = $ThiefGitCommit; Opp = $ThiefOpponentUrl }
+    @{ Repo = $CopRepo;   Role = "police"; Tag = "cop";   Commit = $CopGitCommit;  Opp = $CopOpponentUrl;   Out = $CopOut },
+    @{ Repo = $ThiefRepo; Role = "thief";  Tag = "thief"; Commit = $ThiefGitCommit; Opp = $ThiefOpponentUrl; Out = $ThiefOut }
 )
 foreach ($entry in $plan) {
     if ($entry.Opp -notmatch '^https?://') { throw "invalid opponent URL for $($entry.Tag): $($entry.Opp)" }
@@ -296,30 +314,31 @@ $runStart = Get-Date
 $peers = @()
 foreach ($entry in $plan) {
     $peers += @{ Tag = $entry.Tag; Repo = $entry.Repo;
-                 Process = (Start-NajamjadPeer $entry.Repo $entry.Role $entry.Port $entry.Opp $Mode $SharedOut $entry.Tunnel.Url $entry.Commit $FirstWindowRole $null $entry.Tag) }
+                 Process = (Start-NajamjadPeer $entry.Repo $entry.Role $entry.Port $entry.Opp $Mode $entry.Out $entry.Tunnel.Url $entry.Commit $FirstWindowRole $null $entry.Tag) }
 }
 
+$copPartial = $null; $thiefPartial = $null
 try {
-    $results = Wait-ResultArtifacts $SharedOut $Games 120 $runStart 2
+    $copPartial = Wait-RolePartial $CopOut "police" 120 $runStart
+    $thiefPartial = Wait-RolePartial $ThiefOut "thief" 120 $runStart
 } finally {
+    # Only AFTER both role processes have finalized (or on failure) do they
+    # come down; then — and only then — post-match aggregation may begin.
     $peers | ForEach-Object { Stop-Quiet $_.Process }
     Log "peer processes stopped; logs preserved in $LogDir"
     if (-not $SkipTunnels) { $tunnels | ForEach-Object { Stop-Quiet $_.Process }; Log "tunnels stopped" }
 }
 
-$allPass = $true
-$shas = @()
-foreach ($f in $results) {
-    $res = Get-Content $f.FullName -Raw | ConvertFrom-Json
-    $shas += $res.mutual_agreement.sha256
-    if (-not ($res -and ($res.num_sub_games -eq $Games) -and $res.all_audits_verified)) { $allPass = $false }
-    Log "$($f.Name): winner=$($res.series_winner) audits_ok=$($res.all_audits_verified) mutual=$($res.mutual_agreement.sha256.Substring(0,12))..."
-}
-if (($shas | Select-Object -Unique).Count -ne 1) { $allPass = $false; Log "OUR TWO PROCESSES DISAGREE on the mutual digest" }
+$agg = Invoke-Aggregator $CopOut $ThiefOut $TeamReportDir $Mode
+Log "aggregation: status=$($agg.status) reason=$($agg.reason) report=$($agg.report_status) winner=$($agg.series_winner) mutual=$($agg.mutual_sha256)"
+
+$allPass = ($agg.status -eq "ok") -and
+           ($copPartial -and $copPartial.all_audits_verified) -and
+           ($thiefPartial -and $thiefPartial.all_audits_verified)
 
 if ($Mode -eq "friendly") {
     Assert-NoEmailArtifacts
-    Write-NajamjadGate $allPass "games=$Games cop-opp=$($plan[0].Opp) thief-opp=$($plan[1].Opp) shared-out=$SharedOut"
+    Write-NajamjadGate $allPass "games=$Games cop-opp=$($plan[0].Opp) thief-opp=$($plan[1].Opp) cop-out=$CopOut thief-out=$ThiefOut"
     if ($allPass) { Write-Host "NAJAMJAD FRIENDLY PASS - READY FOR COUNTED MATCH" -ForegroundColor Green; exit 0 }
     Write-Host "NAJAMJAD FRIENDLY FAIL - DO NOT RUN COUNTED MATCH (see $LogDir)" -ForegroundColor Red
     exit 1

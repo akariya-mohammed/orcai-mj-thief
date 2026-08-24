@@ -32,7 +32,7 @@ import hashlib
 import json
 from typing import Any
 
-from police_thief.interop import consensus
+from police_thief.interop import consensus, refaudit
 from police_thief.interop import terms as terms_mod
 from police_thief.interop.refcrypto import reference_commit
 
@@ -62,6 +62,9 @@ SCENT_MODEL_SHA256 = \
 THEIR_COP_URL = "https://cop.4laboratory.com/mcp"
 THEIR_THIEF_URL = "https://thief.4laboratory.com/mcp"
 
+#: §7.4 friendly recipient — the TEAM address, never the lecturer.
+FRIENDLY_RECIPIENT = "judekhleif@gmail.com"
+
 # -- timing policy (their §3.1 table), NajAmjad profile only ------------------
 TURN_WAIT = 60.0           # our per-turn silence watchdog (they take <= 30 s)
 HANDSHAKE_REPLY = 60.0     # per negotiate attempt, inside the window budget
@@ -71,7 +74,6 @@ BACKOFF_CEILING = 5.0      # their §9.9: bounded exponential backoff, 5 s ceili
 WINDOW_PATIENCE = 1000.0   # 16.7 minutes of WALL CLOCK per window
 AUDIT_WAIT = 30.0          # they wait 30 s for our reveal; we mirror it
 REOFFER_LIMIT = 3          # bounded same-number re-offers of a failed window
-MERGE_WAIT = 180.0         # wait for the sibling process's row files at series end
 
 BUSY_ERROR = "a mini-game is in progress; re-send this handshake at the boundary"
 
@@ -251,6 +253,66 @@ def windows_for(fixed_role: str, first_window_role: str,
 def opponent_url_for(fixed_role: str) -> str:
     """Per-role routing: our cop dials their thief, our thief dials their cop."""
     return THEIR_THIEF_URL if fixed_role == "police" else THEIR_COP_URL
+
+
+def group_rows(rows: list[dict[str, Any]], our_group: str,
+               their_group: str) -> list[dict[str, Any]]:
+    """Five-key consensus rows (group-keyed roles/score) from internal rows.
+
+    Pure function shared by the gameplay peer (its own windows only) and the
+    POST-MATCH aggregator (all six merged rows) — no state crosses between
+    the two role processes through this module.
+    """
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        my_role = row["my_role"]
+        their_role = "thief" if my_role == "police" else "police"
+        our_score = (row["police_score"] if my_role == "police"
+                     else row["thief_score"])
+        their_score = (row["thief_score"] if my_role == "police"
+                       else row["police_score"])
+        if our_score > their_score:
+            winner_group = our_group
+        elif their_score > our_score:
+            winner_group = their_group
+        else:
+            winner_group = None
+        out.append(consensus.consensus_row(
+            sub_game_number=row["index"], result=row["ending"],
+            roles={our_group: my_role, their_group: their_role},
+            score={our_group: our_score, their_group: their_score},
+            winner_group=winner_group))
+    return out
+
+
+def row_report(row: dict[str, Any], cr: dict[str, Any], our_group: str,
+               their_group: str, game_id: str) -> dict[str, Any]:
+    """One report row: group-keyed roles/score and the PER-WINDOW commit.
+
+    ``github_commit`` carries the repo HEAD of the process that actually
+    played this window (their §7.3) — thief repo on thief windows, cop repo
+    on police windows, never one SHA stamped across all six.
+    """
+    n = row["index"]
+    return {
+        "sub_game_number": n,
+        "roles": cr["roles"],
+        "result": cr["result"],
+        "winner_group": cr["winner_group"],
+        "score": cr["score"],
+        "github_commit": {our_group: row.get("our_commit", ""),
+                          their_group: row.get("their_commit", "")},
+        "tokens": {our_group: 0, their_group: 0},
+        "steps": row.get("step", 0),
+        "started_at": row.get("started_at", ""),
+        "ended_at": row.get("ended_at", ""),
+        "audit": {
+            "log_verified": bool(row.get("log_verified")),
+            "tampered": row.get("audit_of_opponent") == refaudit.TAMPERED,
+            "result_agreed": bool(row.get("result_agreed")),
+        },
+        "log_files": [f"log_{game_id}_g{n:02d}.json"],
+    }
 
 
 # -- mutual result signature (their §7.2 / Task 8) ----------------------------

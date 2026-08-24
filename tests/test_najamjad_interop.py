@@ -35,6 +35,7 @@ from police_thief.domain.brains import Decision, Direction, MoveType
 from police_thief.infra.email_sender import LEAGUE_ADDRESS
 from police_thief.interop import consensus as C
 from police_thief.interop import najamjad as N
+from police_thief.interop import najamjad_report as R
 from police_thief.interop import terms as terms_mod
 from police_thief.interop.mcp import Inbox
 from police_thief.interop.refcrypto import digest, reference_commit
@@ -687,13 +688,77 @@ def test_non_tie_has_winner_and_no_tie_award(tmp_path):
     assert "tie_award" not in aggregate
 
 
-def test_result_carries_per_window_per_repo_commits(tmp_path):
+# =========================================================================
+# §2.4.2 — strict agent separation + the post-match aggregator
+# =========================================================================
+def _make_role_dirs(tmp_path, rows=None):
+    """Two INDEPENDENT role-owned artifact sets, exactly as the two gameplay
+    processes produce them — no shared directory anywhere."""
+    rows = rows if rows is not None else _tie_rows()
+    cop_dir, thief_dir = tmp_path / "cop-artifacts", tmp_path / "thief-artifacts"
+    cop = make_peer(cop_dir, natural_role=POLICE)
+    thief = make_peer(thief_dir, natural_role=THIEF)
+    cop.rows = [r for r in rows if r["index"] in (1, 3, 5)]
+    thief.rows = [r for r in rows if r["index"] in (2, 4, 6)]
+    cop._compute_ids(), thief._compute_ids()
+    for row in cop.rows:
+        cop._write_row_file(row)
+    for row in thief.rows:
+        thief._write_row_file(row)
+    cop.build_najamjad_role_result()
+    thief.build_najamjad_role_result()
+    return cop_dir, thief_dir
+
+
+def _dir_fingerprint(path: Path) -> dict:
+    return {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in sorted(path.glob("*.json"))}
+
+
+def test_gameplay_peer_has_no_sibling_reading_code():
+    """The gameplay class must not even HAVE merge/dispatch machinery: the
+    six-row report and the email belong exclusively to the aggregator."""
+    assert not hasattr(ReferenceSeriesPeer, "_collect_all_rows")
+    assert not hasattr(ReferenceSeriesPeer, "build_najamjad_result")
+    assert not hasattr(ReferenceSeriesPeer, "_dispatch_report_najamjad")
+
+
+def test_role_partial_ignores_foreign_row_files_and_needs_no_sibling(tmp_path):
+    """Tests 1-4: each process finalizes from ITS OWN rows only, instantly,
+    with the sibling's artifacts completely unavailable — and even a foreign
+    row file dropped into its directory is not read back into its result."""
     peer = make_peer(tmp_path, natural_role=POLICE)      # plays 1/3/5
     peer.rows = [r for r in _tie_rows() if r["index"] in (1, 3, 5)]
     peer._compute_ids()
     for row in [r for r in _tie_rows() if r["index"] in (2, 4, 6)]:
-        peer._write_row_file(row)                        # sibling's windows
-    body = peer.build_najamjad_result()
+        peer._write_row_file(row)          # foreign rows present on disk
+    body = peer.build_najamjad_role_result()
+    assert body["report_type"] == "najamjad_role_partial_result"
+    assert body["windows_played"] == [1, 3, 5]           # own windows ONLY
+    assert body["num_sub_games"] == 3 == body["windows_expected"]
+    assert body["mutual_agreement"]["sha256"] == ""      # deferred, not invented
+    assert body["series_winner"] == "pending-aggregation"
+    assert "deferred" in body["report_status"]["status"]
+    assert not (tmp_path / f"result_{GOLDEN_GAME_ID}.json").exists()
+
+
+def test_role_partial_carries_own_commit_per_window(tmp_path):
+    peer = make_peer(tmp_path, natural_role=THIEF)       # plays 2/4/6
+    peer.rows = [r for r in _tie_rows() if r["index"] in (2, 4, 6)]
+    peer._compute_ids()
+    body = peer.build_najamjad_role_result()
+    assert [r["github_commit"]["orcai-mj"] for r in body["sub_games"]] == \
+        ["b" * 40, "b" * 40, "b" * 40]
+
+
+def test_aggregator_merges_two_finalized_sets(tmp_path):
+    """Tests 5 + per-window commits + tie rule end-to-end."""
+    cop_dir, thief_dir = _make_role_dirs(tmp_path)
+    fake = _FakeSender()
+    outcome = R.aggregate(cop_dir, thief_dir, tmp_path / "team", "friendly",
+                          sender_factory=lambda: fake, log=lambda *_: None)
+    assert outcome["status"] == "ok"
+    body = outcome["body"]
     commits = {r["sub_game_number"]: r["github_commit"]["orcai-mj"]
                for r in body["sub_games"]}
     assert commits == {1: "a" * 40, 3: "a" * 40, 5: "a" * 40,
@@ -702,35 +767,75 @@ def test_result_carries_per_window_per_repo_commits(tmp_path):
     assert body["final_result"]["total_score"] == \
         {"orcai-mj": 75, "najamjad": 75}
     assert body["final_result"]["tie_award"] == 2
+    expected_rows = sorted(_tie_rows(), key=lambda r: r["index"])
     assert body["mutual_agreement"]["sha256"] == N.mutual_digest(
         N.build_mutual_doc(GOLDEN_GAME_ID,
-                           peer._najamjad_group_rows(peer._collect_all_rows()),
+                           N.group_rows(expected_rows, "orcai-mj", "najamjad"),
                            "orcai-mj", "najamjad"))
+    assert (tmp_path / "team" / f"result_{GOLDEN_GAME_ID}.json").exists()
 
 
-def test_both_processes_derive_the_same_mutual_digest(tmp_path, monkeypatch):
-    """The cop-repo view (plays 1/3/5) and the thief-repo view (plays 2/4/6)
-    must sign byte-identical consensus objects."""
-    rows = _tie_rows()
-    cop_dir, thief_dir = tmp_path / "cop", tmp_path / "thief"
-    cop = make_peer(cop_dir, natural_role=POLICE)
-    thief = make_peer(thief_dir, natural_role=THIEF)
-    monkeypatch.setattr(cop, "_new_gmail_sender", lambda: _FakeSender())
-    monkeypatch.setattr(thief, "_new_gmail_sender", lambda: _FakeSender())
-    cop.rows = [r for r in rows if r["index"] in (1, 3, 5)]
-    thief.rows = [r for r in rows if r["index"] in (2, 4, 6)]
-    cop._compute_ids(), thief._compute_ids()
-    for row in rows:
-        if row["index"] in (2, 4, 6):
-            cop._write_row_file(row)
-        else:
-            thief._write_row_file(row)
-    body_cop = cop.build_najamjad_result()
-    body_thief = thief.build_najamjad_result()
-    assert body_cop["mutual_agreement"]["sha256"] == \
-        body_thief["mutual_agreement"]["sha256"]
-    # window-6 player is the one that files the report
-    assert "secondary" in body_cop["report_status"]["status"]
+def test_aggregator_refuses_an_incomplete_series(tmp_path):
+    """Tests 6 + 8: fewer than six finalized windows -> suppressed, no team
+    result written, no email — never invented values."""
+    cop_dir, thief_dir = _make_role_dirs(tmp_path)
+    (cop_dir / f"row_{GOLDEN_GAME_ID}_g03.json").unlink()
+    fake = _FakeSender()
+    outcome = R.aggregate(cop_dir, thief_dir, tmp_path / "team", "counted",
+                          sender_factory=lambda: fake, log=lambda *_: None)
+    assert outcome["status"] == "suppressed"
+    assert "incomplete" in outcome["reason"]
+    assert not (tmp_path / "team" / f"result_{GOLDEN_GAME_ID}.json").exists()
+    assert not fake.sent
+
+
+def test_aggregator_refuses_contradictory_role_artifacts(tmp_path):
+    """Test 8: the same window claimed by both role processes is a
+    contradiction — suppress, do not pick a side."""
+    cop_dir, thief_dir = _make_role_dirs(tmp_path)
+    contested = thief_dir / f"row_{GOLDEN_GAME_ID}_g02.json"
+    (cop_dir / f"row_{GOLDEN_GAME_ID}_g02.json").write_text(
+        contested.read_text(encoding="utf-8"), encoding="utf-8")
+    fake = _FakeSender()
+    outcome = R.aggregate(cop_dir, thief_dir, tmp_path / "team", "friendly",
+                          sender_factory=lambda: fake, log=lambda *_: None)
+    assert outcome["status"] == "suppressed"
+    assert "BOTH role processes" in outcome["reason"]
+    assert not fake.sent
+
+
+def test_aggregator_never_alters_role_owned_artifacts(tmp_path):
+    """Test 7: the two source artifact sets are byte-identical before and
+    after aggregation — the aggregator is a reader, never a writer, there."""
+    cop_dir, thief_dir = _make_role_dirs(tmp_path)
+    before = (_dir_fingerprint(cop_dir), _dir_fingerprint(thief_dir))
+    R.aggregate(cop_dir, thief_dir, tmp_path / "team", "friendly",
+                sender_factory=_FakeSender, log=lambda *_: None)
+    assert (_dir_fingerprint(cop_dir), _dir_fingerprint(thief_dir)) == before
+
+
+def test_exactly_one_team_result_is_produced(tmp_path):
+    """Test 9: role dirs hold only partials; the ONE result_<game_id>.json
+    exists in the aggregator's own output directory."""
+    cop_dir, thief_dir = _make_role_dirs(tmp_path)
+    R.aggregate(cop_dir, thief_dir, tmp_path / "team", "friendly",
+                sender_factory=_FakeSender, log=lambda *_: None)
+    team_results = list((tmp_path / "team").glob("result_*.json"))
+    assert [p.name for p in team_results] == [f"result_{GOLDEN_GAME_ID}.json"]
+    for role_dir in (cop_dir, thief_dir):
+        assert not (role_dir / f"result_{GOLDEN_GAME_ID}.json").exists()
+
+
+def test_aggregation_is_deterministic_across_runs(tmp_path):
+    """Two independent aggregations of the same finalized sets sign the same
+    consensus object — what the two teams will compare before filing."""
+    cop_dir, thief_dir = _make_role_dirs(tmp_path)
+    one = R.aggregate(cop_dir, thief_dir, tmp_path / "t1", "friendly",
+                      sender_factory=_FakeSender, log=lambda *_: None)
+    two = R.aggregate(cop_dir, thief_dir, tmp_path / "t2", "friendly",
+                      sender_factory=_FakeSender, log=lambda *_: None)
+    assert one["body"]["mutual_agreement"]["sha256"] == \
+        two["body"]["mutual_agreement"]["sha256"]
 
 
 # =========================================================================
@@ -748,41 +853,57 @@ class _FakeSender:
 
 
 def _result_stub():
-    return {"series_winner": "tie", "all_audits_verified": True}
+    return {"game_id": GOLDEN_GAME_ID, "series_winner": "tie",
+            "all_audits_verified": True}
 
 
-def test_friendly_report_never_reaches_the_lecturer(tmp_path, monkeypatch):
-    peer = make_peer(tmp_path, mode="friendly")
-    peer._compute_ids()
+def test_gameplay_has_no_email_path_only_the_aggregator_does():
+    """Test 10: exactly one dispatch path exists, and it is NOT in the
+    gameplay peer."""
+    assert not hasattr(ReferenceSeriesPeer, "_dispatch_report_najamjad")
+    assert callable(R.dispatch_report)
+
+
+def test_friendly_report_never_reaches_the_lecturer(tmp_path):
     fake = _FakeSender()
-    monkeypatch.setattr(peer, "_new_gmail_sender", lambda: fake)
-    report = peer._dispatch_report_najamjad(_result_stub())
+    report = R.dispatch_report(_result_stub(), tmp_path, "friendly",
+                               tmp_path, tmp_path,
+                               sender_factory=lambda: fake)
     assert report["recipient"] == NAJAMJAD_FRIENDLY_RECIPIENT
     assert report["recipient"] != LEAGUE_ADDRESS
     assert fake.recipient == NAJAMJAD_FRIENDLY_RECIPIENT
 
 
-def test_counted_report_goes_to_the_lecturer_once(tmp_path, monkeypatch):
-    peer = make_peer(tmp_path, mode="counted")
-    peer._compute_ids()
+def test_counted_report_goes_to_the_lecturer_once(tmp_path):
     fake = _FakeSender()
-    monkeypatch.setattr(peer, "_new_gmail_sender", lambda: fake)
-    report = peer._dispatch_report_najamjad(_result_stub())
+    report = R.dispatch_report(_result_stub(), tmp_path, "counted",
+                               tmp_path, tmp_path,
+                               sender_factory=lambda: fake)
     assert report["recipient"] == LEAGUE_ADDRESS
     assert report["status"] == "sent"
-    again = peer._dispatch_report_najamjad(_result_stub())
+    again = R.dispatch_report(_result_stub(), tmp_path, "counted",
+                              tmp_path, tmp_path,
+                              sender_factory=lambda: fake)
     assert again["status"] == "duplicate_suppressed"       # sentinel guard
     assert len(fake.sent) == 1
 
 
-def test_counted_report_suppressed_on_audit_failures(tmp_path, monkeypatch):
-    peer = make_peer(tmp_path, mode="counted")
-    peer._compute_ids()
+def test_counted_report_suppressed_on_audit_failures(tmp_path):
     fake = _FakeSender()
-    monkeypatch.setattr(peer, "_new_gmail_sender", lambda: fake)
-    report = peer._dispatch_report_najamjad(
-        {"series_winner": "tie", "all_audits_verified": False})
+    report = R.dispatch_report(
+        dict(_result_stub(), all_audits_verified=False), tmp_path, "counted",
+        tmp_path, tmp_path, sender_factory=lambda: fake)
     assert report["status"].startswith("suppressed")
+    assert not fake.sent
+
+
+def test_email_disable_env_suppresses_everything(tmp_path, monkeypatch):
+    monkeypatch.setenv("P2P_EMAIL_DISABLE", "1")
+    fake = _FakeSender()
+    report = R.dispatch_report(_result_stub(), tmp_path, "counted",
+                               tmp_path, tmp_path,
+                               sender_factory=lambda: fake)
+    assert "P2P_EMAIL_DISABLE" in report["status"]
     assert not fake.sent
 
 

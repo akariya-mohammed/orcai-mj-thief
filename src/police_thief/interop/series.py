@@ -53,9 +53,10 @@ SCHEMA_VERSION = "1.2"
 AMIREMAN_FRIENDLY_RECIPIENT = "judekhleif@gmail.com"
 
 # NajAmjad §7.4: counted goes to the lecturer from each team separately;
-# friendlies go to the two teams ONLY — never the lecturer. Our friendly copy
-# goes to our own team address (their copy is theirs to send).
-NAJAMJAD_FRIENDLY_RECIPIENT = "judekhleif@gmail.com"
+# friendlies go to the two teams ONLY — never the lecturer. Dispatch itself
+# lives in the POST-MATCH aggregator (interop/najamjad_report.py); the
+# gameplay peer never emails for this profile.
+NAJAMJAD_FRIENDLY_RECIPIENT = najamjad_mod.FRIENDLY_RECIPIENT
 
 AUDIT_WAIT = 20.0          # their REHANDSHAKE_AUDIT_WAIT
 AGREEMENT_WAIT = 60.0      # their re-negotiate window
@@ -1463,68 +1464,38 @@ class ReferenceSeriesPeer:
         self._current_window = None
         return row
 
-    def _row_path(self, n: int) -> Path:
-        return self.out_dir / f"row_{self.game_id}_g{n:02d}.json"
-
     def _write_row_file(self, row: dict) -> None:
-        """Persist one played window so the sibling process can assemble the
-        full six-row report (two processes, one shared artifacts directory)."""
+        """Persist one played window as this process's OWN immutable artifact.
+
+        Written into this process's own role-owned output directory ONLY. The
+        sibling role process never reads it (project §2.4.2: the two agents
+        share no state); the POST-MATCH aggregator — a separate step the
+        launcher runs after the whole series has finished — is the only
+        reader that ever merges the two roles' artifacts.
+        """
         self.out_dir.mkdir(parents=True, exist_ok=True)
-        path = self._row_path(row["index"])
+        path = self.out_dir / f"row_{self.game_id}_g{row['index']:02d}.json"
         path.write_text(json.dumps(row, indent=2, ensure_ascii=False),
                         encoding="utf-8")
 
-    def _collect_all_rows(self) -> list[dict]:
-        """Own rows + the sibling process's row files, bounded wait, sorted."""
-        merged: dict[int, dict] = {row["index"]: row for row in self.rows}
-        deadline = time.monotonic() + najamjad_mod.MERGE_WAIT
-        missing = [n for n in range(1, self.num_games + 1) if n not in merged]
-        while missing and time.monotonic() < deadline:
-            for n in list(missing):
-                path = self._row_path(n)
-                if path.exists():
-                    try:
-                        merged[n] = json.loads(path.read_text(encoding="utf-8"))
-                        missing.remove(n)
-                    except (OSError, ValueError):
-                        pass
-            if missing:
-                time.sleep(2.0)
-        if missing:
-            self.log(f"[{self.natural_role}] rows never arrived from the "
-                     f"sibling process for windows {missing}")
-        return [merged[n] for n in sorted(merged)]
-
     def _najamjad_group_rows(self, rows: list[dict]) -> list[dict]:
-        """Five-key consensus rows (group-keyed roles/score) from internal rows."""
+        """Group-keyed consensus rows for THIS process's own windows."""
         our_group = self.identity.get("group_id", najamjad_mod.OUR_GROUP_ID)
         their_group = (self.their_identity.get("group_id", "")
                        or najamjad_mod.THEIR_GROUP_ID)
-        out: list[dict] = []
-        for row in rows:
-            my_role = row["my_role"]
-            their_role = other(my_role)
-            our_score = row["police_score"] if my_role == POLICE \
-                else row["thief_score"]
-            their_score = row["thief_score"] if my_role == POLICE \
-                else row["police_score"]
-            if our_score > their_score:
-                winner_group = our_group
-            elif their_score > our_score:
-                winner_group = their_group
-            else:
-                winner_group = None
-            out.append(consensus.consensus_row(
-                sub_game_number=row["index"], result=row["ending"],
-                roles={our_group: my_role, their_group: their_role},
-                score={our_group: our_score, their_group: their_score},
-                winner_group=winner_group))
-        return out
+        return najamjad_mod.group_rows(rows, our_group, their_group)
 
     def run_series_najamjad(self) -> dict:
-        """Split-process series: this process plays ONLY its own windows,
-        stays alive through the whole series, and both processes converge on
-        one report via shared row files."""
+        """Split-process series: this process plays ONLY its own windows and
+        touches ONLY its own role-owned artifacts.
+
+        Strict agent separation (project §2.4.2): no shared files, memory,
+        IPC or polling between our cop and thief processes — synchronisation
+        happens purely through the per-window handshake with the OPPONENT
+        (busy refusals + retries). The six-row team report is assembled later
+        by the POST-MATCH aggregator (``police-thief najamjad-report``),
+        which the launcher runs only after the whole series has finished.
+        """
         najamjad_mod.verify_terms(self.terms)          # fail loudly (their §1)
         najamjad_mod.verify_commit_vector()            # golden vector (their §5)
         self.game_started_at = datetime.now(UTC).isoformat()
@@ -1537,60 +1508,39 @@ class ReferenceSeriesPeer:
             row = self.play_window_najamjad(n)
             self.rows.append(row)
             self._write_row_file(row)
-        return self.build_najamjad_result()
+            self._write_config_artifact(n)     # own windows' config artifacts
+        return self.build_najamjad_role_result()
 
-    def build_najamjad_result(self) -> dict:
-        """Six-row report with the NajAmjad mutual signature and tie rule."""
+    def build_najamjad_role_result(self) -> dict:
+        """This ROLE's partial result — its own windows only, nothing merged.
+
+        Deliberately contains no sibling data, computes no team mutual digest
+        and sends no email: the six-row team report, the §7.2 signature and
+        the single dispatch belong to the POST-MATCH aggregator
+        (``interop/najamjad_report.py``), which runs only after the series.
+        """
         if not self.game_id:
             self._compute_ids()
         our_group = self.identity.get("group_id", najamjad_mod.OUR_GROUP_ID)
         their_group = (self.their_identity.get("group_id", "")
                        or najamjad_mod.THEIR_GROUP_ID)
-        all_rows = self._collect_all_rows()
-        group_rows = self._najamjad_group_rows(all_rows)
-        mutual_doc = najamjad_mod.build_mutual_doc(
-            self.game_id, group_rows, our_group, their_group,
-            tie_award=self.config.get("scoring", {}).get("tie_score", 2))
-        mutual_sha = najamjad_mod.mutual_digest(mutual_doc)
-        aggregate = mutual_doc["aggregate"]
-
-        def _row_report(row: dict, cr: dict) -> dict:
-            n = row["index"]
-            return {
-                "sub_game_number": n,
-                "roles": cr["roles"],
-                "result": cr["result"],
-                "winner_group": cr["winner_group"],
-                "score": cr["score"],
-                # Per-window commit (their §7.3): the repo HEAD of the process
-                # that actually played this window — thief repo on thief
-                # windows, cop repo on police windows. NEVER one SHA for all.
-                "github_commit": {our_group: row.get("our_commit", ""),
-                                  their_group: row.get("their_commit", "")},
-                "tokens": {our_group: 0, their_group: 0},
-                "steps": row.get("step", 0),
-                "started_at": row.get("started_at", ""),
-                "ended_at": row.get("ended_at", ""),
-                "audit": {
-                    "log_verified": bool(row.get("log_verified")),
-                    "tampered": row.get("audit_of_opponent") == refaudit.TAMPERED,
-                    "result_agreed": bool(row.get("result_agreed")),
-                },
-                "log_files": [f"log_{self.game_id}_g{n:02d}.json"],
-            }
-
-        sub_games_report = [_row_report(row, cr)
-                            for row, cr in zip(all_rows, group_rows)]
-        clean = bool(all_rows) and len(all_rows) == self.num_games and all(
-            r["ending"] in (CAPTURE, SURVIVAL)
-            and str(r.get("audit_of_opponent", "")).startswith("Verified OK")
-            and r.get("audit_delivered", True)
-            and not r.get("protocol_violations")
-            for r in all_rows)
+        own_rows = sorted(self.rows, key=lambda r: r["index"])
+        grouped = self._najamjad_group_rows(own_rows)
+        sub_games_report = [
+            najamjad_mod.row_report(row, cr, our_group, their_group,
+                                    self.game_id)
+            for row, cr in zip(own_rows, grouped)]
+        clean = bool(own_rows) and len(own_rows) == len(self.my_windows) \
+            and all(
+                r["ending"] in (CAPTURE, SURVIVAL)
+                and str(r.get("audit_of_opponent", "")).startswith("Verified OK")
+                and r.get("audit_delivered", True)
+                and not r.get("protocol_violations")
+                for r in own_rows)
         game_ended_at = datetime.now(UTC).isoformat()
         from police_thief.shared.sysinfo import detailed_hardware_spec as get_hw
         body = {
-            "report_type": "final_game_result",
+            "report_type": "najamjad_role_partial_result",
             "schema_version": SCHEMA_VERSION,
             "game_id": self.game_id,
             "game_uid": self.game_uid,
@@ -1598,6 +1548,9 @@ class ReferenceSeriesPeer:
             "timezone": "UTC",
             "game_started_at": self.game_started_at,
             "game_ended_at": game_ended_at,
+            "natural_role": self.natural_role,
+            "windows_played": [r["index"] for r in own_rows],
+            "windows_expected": len(self.my_windows),
             "sub_games": sub_games_report,
             "links": {"github": {
                 our_group: dict(self.identity.get("repos", {})),
@@ -1623,95 +1576,35 @@ class ReferenceSeriesPeer:
                     "hardware_spec": {},
                 },
             },
-            # The signed consensus: sha over EXACTLY {game_id, aggregate,
-            # sub_games} in the SPACED serialisation (their §7.2). Compared
-            # with NajAmjad before either team files — no wire exchange here.
             "mutual_agreement": {
-                "sha256": mutual_sha,
-                "signed_over": ["game_id", "aggregate", "sub_games"],
-                "serialization": "json.dumps(sort_keys=True, "
-                                 "ensure_ascii=False) — default spaced separators",
-                "confirmed": False,
+                "sha256": "",
+                "deferred_to": "post-match aggregator "
+                               "(police-thief najamjad-report)",
             },
-            "final_result": dict(aggregate) | {"tokens_total_series": 0},
-            # -- internal keys the CLI / dispatch / launcher read --------------
+            # -- internal keys the CLI / launcher read -------------------------
             "dialect": "najamjad",
             "spec_profile": "najamjad",
             "match_mode": FRIENDLY_LABEL if self.mode == FRIENDLY else "COUNTED",
-            "num_sub_games": len(all_rows),
+            "num_sub_games": len(own_rows),
             "config_sha256": digest(self.config.shared),
             "terms_sha256": najamjad_mod.terms_sha256(self.terms),
-            "totals": {"police": sum(r["police_score"] for r in all_rows),
-                       "thief": sum(r["thief_score"] for r in all_rows)},
-            "series_winner": aggregate["winner_group"] or "tie",
+            "totals": {"police": sum(r["police_score"] for r in own_rows),
+                       "thief": sum(r["thief_score"] for r in own_rows)},
+            "series_winner": "pending-aggregation",
             "all_audits_verified": clean,
+            "report_status": {"status": "deferred (post-match aggregator "
+                                        "files the team report)"},
         }
         body["result_sha256"] = digest(body)
-
         self.out_dir.mkdir(parents=True, exist_ok=True)
-        primary = self.num_games in self.my_windows
-        role_result = self.out_dir / \
-            f"result_{self.game_id}_{self.natural_role}.json"
-        role_result.write_text(json.dumps(body, indent=2, ensure_ascii=False),
-                               encoding="utf-8")
-        report = {"status": "suppressed (secondary process — the window-6 "
-                            "process files the report)"}
-        if primary:
-            for n in range(1, self.num_games + 1):
-                self._write_config_artifact(n)
-            self._update_declaration_end(game_ended_at)
-            (self.out_dir / f"result_{self.game_id}.json").write_text(
-                json.dumps(body, indent=2, ensure_ascii=False),
-                encoding="utf-8")
-            report = self._dispatch_report_najamjad(body)
-        body["report_status"] = report
-        self.log(f"[{self.natural_role}] najamjad series done: "
-                 f"aggregate={aggregate} report={report['status']}")
+        self._update_declaration_end(game_ended_at)
+        path = self.out_dir / f"result_{self.game_id}_{self.natural_role}.json"
+        path.write_text(json.dumps(body, indent=2, ensure_ascii=False),
+                        encoding="utf-8")
+        self.log(f"[{self.natural_role}] najamjad role windows done: "
+                 f"{body['windows_played']} clean={clean} — team report "
+                 f"deferred to the post-match aggregator")
         return body
-
-    def _dispatch_report_najamjad(self, result: dict) -> dict:
-        """NajAmjad §7.4 dispatch: counted -> the lecturer, from each team
-        separately; friendly -> the teams only, NEVER the lecturer. One email
-        per completed series (shared sentinel), full artifact set attached."""
-        import os
-
-        from police_thief.infra.email_sender import LEAGUE_ADDRESS
-        game_id = self.game_id or "najamjad-series"
-        recipient = (NAJAMJAD_FRIENDLY_RECIPIENT if self.mode == FRIENDLY
-                     else LEAGUE_ADDRESS)
-        if os.environ.get("P2P_EMAIL_DISABLE") == "1":
-            # Development/rehearsal hard-off: no email of any kind.
-            return {"status": "suppressed (P2P_EMAIL_DISABLE=1)",
-                    "recipient": recipient}
-        if self.mode == COUNTED and not result.get("all_audits_verified"):
-            return {"status": "suppressed (audit failures — all audits must "
-                              "pass before the lecturer is mailed)",
-                    "recipient": recipient}
-        sentinel = self.out_dir / f"najamjad_report_sent_{game_id}.lock"
-        if sentinel.exists():
-            return {"status": "duplicate_suppressed", "sentinel": str(sentinel),
-                    "recipient": recipient}
-        artifact_paths: dict = {}
-        decl = self.out_dir / f"declaration_{game_id}.json"
-        if decl.exists():
-            artifact_paths["declaration"] = decl
-        for cfg_path in sorted(self.out_dir.glob(f"config_{game_id}_g*.json")):
-            artifact_paths[cfg_path.stem] = cfg_path
-        for log_path in sorted(self.out_dir.glob(f"log_{game_id}_g*.json")):
-            artifact_paths[log_path.stem] = log_path
-        result_path = self.out_dir / f"result_{game_id}.json"
-        if result_path.exists():
-            artifact_paths["result"] = result_path
-        sender = self._new_gmail_sender()
-        sender.recipient = recipient          # explicit; never the config default
-        sender.mode = "send"
-        summary = {"game_id": game_id, "winner": result.get("series_winner")}
-        report = sender.send_series_report(artifact_paths, summary)
-        report["recipient"] = recipient
-        if report.get("status") == "sent":
-            sentinel.write_text(json.dumps(report, ensure_ascii=False),
-                                encoding="utf-8")
-        return report
 
     # -- reporting: the friendly/counted hard wall -----------------------------
     def dispatch_report(self, result: dict) -> dict:

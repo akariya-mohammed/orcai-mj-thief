@@ -78,6 +78,21 @@ def main(argv: list[str] | None = None) -> int:
     p_interop.add_argument("--mcp-url", default=None,
                            help="our public /mcp URL, for the identity block")
 
+    p_najrep = sub.add_parser(
+        "najamjad-report",
+        help="POST-MATCH aggregator (najamjad): merge the two role "
+             "processes' finalized artifacts into ONE team report. Runs "
+             "strictly AFTER the series — never during gameplay.")
+    p_najrep.add_argument("--cop-dir", required=True,
+                          help="the cop repo's role-owned artifacts directory")
+    p_najrep.add_argument("--thief-dir", required=True,
+                          help="the thief repo's role-owned artifacts directory")
+    p_najrep.add_argument("--out", required=True,
+                          help="output directory for the merged team report")
+    p_najrep.add_argument("--mode", choices=["friendly", "counted"],
+                          default="friendly")
+    p_najrep.add_argument("--games", type=int, default=6)
+
     sub.add_parser("authorize",
                    help="one-time Gmail OAuth consent → writes token.json")
 
@@ -115,6 +130,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "interop":
         from police_thief.cli_cmds import cmd_interop
         return cmd_interop(args)
+    if args.command == "najamjad-report":
+        from police_thief.cli_cmds import cmd_najamjad_report
+        return cmd_najamjad_report(args)
     if args.command == "peer":
         from police_thief.peer.runner import PeerProcess
         from police_thief.shared.config import Config

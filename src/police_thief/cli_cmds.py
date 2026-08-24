@@ -77,10 +77,12 @@ def cmd_interop(args) -> int:
                   "set P2P_CONFIRM_COUNTED=YES")
             return 2
         # Opponent-isolated gate: an ahk-yosi friendly gate must NOT authorize an
-        # amireman counted match (and vice-versa).
+        # amireman counted match (and vice-versa). The najamjad gate lives in
+        # THIS repo's own artifacts dir (role-owned dirs are per-run stamped).
         gate_name = ("friendly_gate.json" if spec_profile == "ahk-yosi"
                      else f"friendly_gate_{spec_profile}.json")
-        gate = Path(args.out).parent / gate_name
+        gate = (Path("artifacts") / gate_name if spec_profile == "najamjad"
+                else Path(args.out).parent / gate_name)
         if not gate.exists() or \
                 not json.loads(gate.read_text(encoding="utf-8")).get("passed"):
             print(f"counted mode requires a passed friendly gate at {gate}")
@@ -116,7 +118,11 @@ def cmd_interop(args) -> int:
             _time.sleep(5)
             peer.reset_for_next_series()
             continue
-        passed = result["all_audits_verified"] and result["num_sub_games"] == args.games
+        # najamjad split mode: each process is judged on ITS OWN windows only
+        # (the six-row team view belongs to the post-match aggregator).
+        expected_games = result.get("windows_expected", args.games)
+        passed = result["all_audits_verified"] and \
+            result["num_sub_games"] == expected_games
         if args.mode == "counted":
             rpt = result.get("report_status", {})
             rpt_status = rpt.get("status", "unknown")
@@ -135,6 +141,42 @@ def cmd_interop(args) -> int:
             return 0 if passed else 1
         _time.sleep(5)
         peer.reset_for_next_series()
+
+
+def cmd_najamjad_report(args) -> int:
+    """POST-MATCH aggregator for the najamjad profile (reporting only).
+
+    Runs strictly AFTER the series: merges the two role processes' finalized,
+    role-owned artifacts into the one six-row team report, computes the
+    NajAmjad mutual digest and dispatches the single email. It never touches
+    gameplay and never writes into either role directory.
+    """
+    import os
+
+    from police_thief.interop.najamjad_report import aggregate
+
+    if args.mode == "counted":
+        if os.environ.get("P2P_CONFIRM_COUNTED") != "YES":
+            print("counted aggregation requires P2P_CONFIRM_COUNTED=YES")
+            return 2
+        if not Path("credentials.json").exists() or \
+                not Path("token.json").exists():
+            print("counted aggregation requires credentials.json + token.json "
+                  "(run: police-thief authorize)")
+            return 2
+    outcome = aggregate(args.cop_dir, args.thief_dir, args.out,
+                        mode=args.mode, num_games=args.games)
+    print(json.dumps({
+        "status": outcome["status"],
+        "reason": outcome.get("reason", ""),
+        "result_written": outcome.get("result_written", False),
+        "result_path": outcome.get("result_path", ""),
+        "report_status": outcome.get("report_status", {}).get("status", ""),
+        "mutual_sha256": (outcome.get("body", {})
+                          .get("mutual_agreement", {}).get("sha256", "")),
+        "series_winner": outcome.get("body", {}).get("series_winner", ""),
+    }), flush=True)
+    return 0 if outcome["status"] == "ok" else 1
 
 
 def cmd_authorize(credentials_path: str = "credentials.json",
