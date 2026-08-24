@@ -52,11 +52,18 @@ class TrapperPolice(BrainBase):
     RESERVE_FLOOR = 4          # at or below this many walls left...
     RESERVE_MAX_DEPTH = 2      # ...only a near-certain line may spend one
 
-    def __init__(self, max_nodes: int = 800, max_depth: int = 10) -> None:
+    def __init__(self, max_nodes: int = 800, max_depth: int = 10,
+                 forbid_barrier_on_thief: bool = False) -> None:
         self.max_nodes = max_nodes
         self.max_depth = max_depth
         self.barrier_max_depth = self.BARRIER_MAX_DEPTH
         self.reserve_max_depth = self.RESERVE_MAX_DEPTH
+        # NajAmjad Barrier Law: a barrier NEVER goes on the cell the thief
+        # occupies, so the R46 pounce is not a legal action and a
+        # barrier-onto-thief node is not a capture. Capture then comes only
+        # from overlap or full enclosure (R47). Default False: the ahk-yosi
+        # and amireman profiles keep the book's R46 pounce untouched.
+        self.forbid_barrier_on_thief = forbid_barrier_on_thief
         self._model = ManhattanBayesThief()
         self._stall = StallDetector()
 
@@ -69,7 +76,7 @@ class TrapperPolice(BrainBase):
         thief = belief.most_likely()
         quota = barriers_max - len(board.barriers)
         # R46 pounce: a barrier ON the adjacent thief cell is the capture itself.
-        if quota > 0:
+        if quota > 0 and not self.forbid_barrier_on_thief:
             for d, cell in board.legal_moves(me):
                 if cell == thief:
                     return (MoveType.BARRIER, d)
@@ -126,6 +133,9 @@ class TrapperPolice(BrainBase):
                 continue
             sim_base = Board(board.grid_size, set(walls))
             for move_type, d, target in self._actions(sim_base, cop, len(walls) - len(board.barriers), quota):
+                if (self.forbid_barrier_on_thief
+                        and move_type is MoveType.BARRIER and target == th):
+                    continue          # NajAmjad: never wall the thief's cell
                 walls2, cop2 = set(walls), cop
                 if move_type is MoveType.MOVE:
                     cop2 = target

@@ -1,0 +1,17 @@
+# LOCAL SIMULATION ONLY — plays the "najamjad" side of a loopback self-play
+# series so the split two-process topology can be rehearsed without the real
+# opponent. NEVER used against the real NajAmjad peers. No secrets here.
+version = "1.0"
+
+[game]
+group_name = "NajAmjad (local sim)"
+group_id = "najamjad"
+members = ["local", "simulation"]
+llm_model = "none (deterministic heuristic agent)"
+seed = 1
+
+[network]
+turn_timeout_seconds = 60
+
+[belief]
+smell_trust_weight = 4.0

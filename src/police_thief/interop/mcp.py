@@ -25,11 +25,26 @@ class Inbox:
         self.agreements: queue.Queue = queue.Queue()
         self.turns: queue.Queue = queue.Queue()
         self.audits: queue.Queue = queue.Queue()
+        # Optional hook (NajAmjad §3.1): builds the negotiate REPLY — a busy
+        # refusal while a mini-game is in play, or an acceptance carrying our
+        # own signed agreement in-band. Must be fast and thread-safe. When it
+        # answers ``accepted: false`` the message is NOT queued (a refused
+        # handshake must never poison the boundary evaluation). Default: None,
+        # preserving the historic {"ok": true} behavior for other profiles.
+        self.negotiate_responder = None
 
     # -- tool handlers (must return fast; opponent enforces a deadline) ------
     def on_negotiate(self, message: dict) -> dict:
-        self.agreements.put(message)
-        return {"ok": True}
+        response = None
+        if self.negotiate_responder is not None:
+            try:
+                response = self.negotiate_responder(message)
+            except Exception:   # noqa: BLE001 — a responder bug must not drop mail
+                response = None
+        refused = isinstance(response, dict) and response.get("accepted") is False
+        if not refused:
+            self.agreements.put(message)
+        return response if isinstance(response, dict) else {"ok": True}
 
     def on_receive_turn(self, message: dict) -> dict:
         self.turns.put(message)

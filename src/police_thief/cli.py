@@ -55,11 +55,18 @@ def main(argv: list[str] | None = None) -> int:
     p_interop.add_argument("--config-json", default="config/game.json",
                            help="signed shared constitution (default: config/game.json; "
                                 "use config/game.amireman.json for team amireman)")
-    p_interop.add_argument("--spec-profile", choices=["ahk-yosi", "amireman"],
+    p_interop.add_argument("--spec-profile",
+                           choices=["ahk-yosi", "amireman", "najamjad"],
                            default="ahk-yosi",
-                           help="interop dialect: ahk-yosi (default) or amireman "
+                           help="interop dialect: ahk-yosi (default), amireman "
                                 "(public spec: sorted game_id, UUID game_uid, "
-                                "series_consensus exchange, Section 12 report)")
+                                "series_consensus exchange, Section 12 report) "
+                                "or najamjad (split two-process series, A2 "
+                                "kernel scent, spaced mutual digest)")
+    p_interop.add_argument("--first-window-role", choices=["police", "thief"],
+                           default="police",
+                           help="najamjad profile: OUR TEAM's role in window 1 "
+                                "(they open as thief, so ours defaults to police)")
     p_interop.add_argument("--agreed-sha", default=None,
                            help="override the expected constitution SHA-256 gate "
                                 "(defaults to the ahk-yosi constitution)")

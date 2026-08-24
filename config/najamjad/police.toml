@@ -1,0 +1,32 @@
+# PRIVATE config for the POLICE peer vs Team NajAmjad (this side only).
+# Isolated from config/police/game.toml (ahk-yosi) and config/amireman/*.toml
+# so no other opponent's identity is ever touched. Our wire group_id for THIS
+# opponent is exactly "orcai-mj" (case-sensitive, per our compatibility block).
+# No secrets here.
+version = "1.0"
+
+[game]
+group_name = "Orcai-MJ"
+group_id = "orcai-mj"
+members = ["Jude Khleif", "Mohammad Akariya"]
+# No LLM is used: the agent is a deterministic heuristic (TrapperPolice /
+# RingRunnerThief) with template hint generation. Reported truthfully.
+llm_model = "none (deterministic heuristic agent)"
+seed = 0
+
+[game.repos]
+cop = "https://github.com/akariya-mohammed/orcai-mj-cop"
+thief = "https://github.com/akariya-mohammed/orcai-mj-thief"
+
+[network]
+# NajAmjad §3.1: their per-turn wait is 30 s, silence watchdog 60 s. We wait
+# 60 s for THEM (patient side is harmless); our own turns are computed in
+# milliseconds so their 30 s envelope is never at risk from us.
+turn_timeout_seconds = 60
+# Public per-role doors, declared in our negotiate identity so NajAmjad can
+# retarget per window (their §3). Fill in when the tunnels are up:
+# cop_mcp_url = "https://.../mcp"
+# thief_mcp_url = "https://.../mcp"
+
+[belief]
+smell_trust_weight = 4.0

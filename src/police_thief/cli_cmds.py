@@ -14,6 +14,12 @@ AGREED_CONFIG_SHA256 = \
 AMIREMAN_CONFIG_SHA256 = \
     "32e86f85c47920c4a567df403bd1f263f1bbea5f59c7db0b7aeb640f30d15812"
 
+#: Full-file gate for config/game.najamjad.json (OUR gate only — NajAmjad sign
+#: the 14-key terms digest a284082d…, which is verified separately and loudly
+#: by the najamjad profile at series start. Do not confuse the two hashes.)
+NAJAMJAD_CONFIG_SHA256 = \
+    "65c164a11b517f61036ffa2e65836a65bc17459c68fff3b9c38216e62b17bbb4"
+
 
 def cmd_interop(args) -> int:
     """Run the reference-dialect networked series (friendly by default).
@@ -31,19 +37,40 @@ def cmd_interop(args) -> int:
 
     spec_profile = getattr(args, "spec_profile", "ahk-yosi")
     shared_json = getattr(args, "config_json", None) or "config/game.json"
-    private = args.config or f"config/{args.role}/game.toml"
+    if spec_profile == "najamjad" and shared_json == "config/game.json":
+        shared_json = "config/game.najamjad.json"    # profile-matched default
+    # Opponent-isolated private identity: the najamjad profile defaults to its
+    # own toml (wire group_id "orcai-mj" for THIS opponent) so no other
+    # opponent's identity file is ever read by accident.
+    default_private = (f"config/najamjad/{args.role}.toml"
+                       if spec_profile == "najamjad"
+                       else f"config/{args.role}/game.toml")
+    private = args.config or default_private
     cfg = Config.load(shared_path=shared_json, private_path=private)
     # The expected constitution depends on the opponent profile; --agreed-sha
     # overrides it explicitly. ahk-yosi and amireman sign DIFFERENT constitutions
     # (New York vs Haifa), so each has its own canonical SHA-256.
-    default_sha = (AMIREMAN_CONFIG_SHA256 if spec_profile == "amireman"
-                   else AGREED_CONFIG_SHA256)
+    default_sha = {"amireman": AMIREMAN_CONFIG_SHA256,
+                   "najamjad": NAJAMJAD_CONFIG_SHA256}.get(
+                       spec_profile, AGREED_CONFIG_SHA256)
     expected_sha = getattr(args, "agreed_sha", None) or default_sha
     actual = digest(cfg.shared)
     if actual != expected_sha:
         print(f"REFUSING TO PLAY: {shared_json} canonical SHA-256 is {actual}, "
               f"agreed constitution ({spec_profile}) is {expected_sha}")
         return 2
+    if spec_profile == "najamjad":
+        # The SIGNED digest for this opponent is the 14-key terms hash, not the
+        # config file hash. Re-derive it through our own loader and fail loudly
+        # on any difference (their §1) — before any process goes near the wire.
+        from police_thief.interop import najamjad as najamjad_mod
+        from police_thief.interop.terms import build_terms
+        try:
+            najamjad_mod.verify_terms(build_terms(cfg, args.games))
+            najamjad_mod.verify_commit_vector()
+        except ValueError as exc:
+            print(f"REFUSING TO PLAY: {exc}")
+            return 2
     if args.mode == "counted":
         if os.environ.get("P2P_CONFIRM_COUNTED") != "YES":
             print("counted mode requires explicit confirmation: "
@@ -74,7 +101,8 @@ def cmd_interop(args) -> int:
         turn_timeout=args.turn_timeout, out_dir=args.out, seed=args.seed,
         mcp_url=args.mcp_url, spec_profile=spec_profile,
         git_commit_hash=getattr(args, "git_commit", ""),
-        game_id_override=getattr(args, "game_id", None))
+        game_id_override=getattr(args, "game_id", None),
+        first_window_role=getattr(args, "first_window_role", "police"))
     peer.start_server()
     import time as _time
     while True:
