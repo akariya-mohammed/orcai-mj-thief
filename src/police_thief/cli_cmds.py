@@ -114,7 +114,10 @@ def cmd_interop(args) -> int:
         except Exception as exc:
             print(json.dumps({"mode": args.mode, "error": str(exc), "passed": False}),
                   flush=True)
-            if args.mode != "friendly":
+            # NajAmjad split architecture: the launcher coordinates series restarts;
+            # autonomous looping would advance window counters past the point
+            # NajAmjad expects on a fresh dial-in, causing window-number mismatch.
+            if args.mode != "friendly" or spec_profile == "najamjad":
                 return 1
             _time.sleep(5)
             peer.reset_for_next_series()
@@ -138,7 +141,8 @@ def cmd_interop(args) -> int:
                           "totals": result["totals"],
                           "series_winner": result["series_winner"],
                           "result_sha256": result["result_sha256"]}), flush=True)
-        if args.mode != "friendly":
+        # NajAmjad split architecture: do NOT loop — launcher restarts as needed.
+        if args.mode != "friendly" or spec_profile == "najamjad":
             return 0 if passed else 1
         _time.sleep(5)
         peer.reset_for_next_series()

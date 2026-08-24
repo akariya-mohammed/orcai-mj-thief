@@ -1269,6 +1269,71 @@ def test_najamjad_wire_identity_has_no_unknown_in_numeric_hw_fields(tmp_path):
 
 
 # =========================================================================
+# §7.6 — fresh-series reset: no stale-state carry-over from prior series
+# =========================================================================
+
+def test_fresh_cop_starts_at_window_1_despite_old_row_artifacts(tmp_path):
+    """A fresh NajAmjad cop process must start at window 1 even when the
+    out_dir already contains row files from a completed previous series
+    (same game_id). Window partition is computed at construction, never
+    inferred from artifacts on disk. Regression for the loop/stale-state bug
+    where completed-series rows caused the next series to begin at window 3."""
+    for n in [1, 3, 5]:
+        f = tmp_path / f"row_najamjad-vs-orcai-mj_g0{n}.json"
+        f.write_text(json.dumps({"index": n, "game_id": "najamjad-vs-orcai-mj"}),
+                     encoding="utf-8")
+    from police_thief.interop.series import ReferenceSeriesPeer, POLICE
+    from police_thief.shared.config import Config
+    cfg = Config.load(
+        shared_path=str(ROOT / "config" / "game.najamjad.json"),
+        private_path=str(ROOT / "config" / "najamjad" / "thief.toml"))
+    peer = ReferenceSeriesPeer(
+        natural_role=POLICE, config=cfg,
+        opponent_url="http://127.0.0.1:0/mcp",
+        my_port=0, num_games=6, mode="friendly",
+        spec_profile="najamjad", out_dir=str(tmp_path))
+    assert peer.my_windows[0] == 1, (
+        "fresh cop must offer window 1 first, never skip based on artifacts")
+    assert peer.my_windows == [1, 3, 5]
+
+
+def test_fresh_thief_starts_at_window_2_despite_old_row_artifacts(tmp_path):
+    """A fresh NajAmjad thief process must start at window 2 even when the
+    out_dir already contains row files from a completed previous series.
+    Regression for the loop/stale-state bug."""
+    for n in [2, 4, 6]:
+        f = tmp_path / f"row_najamjad-vs-orcai-mj_g0{n}.json"
+        f.write_text(json.dumps({"index": n, "game_id": "najamjad-vs-orcai-mj"}),
+                     encoding="utf-8")
+    from police_thief.interop.series import ReferenceSeriesPeer, THIEF
+    from police_thief.shared.config import Config
+    cfg = Config.load(
+        shared_path=str(ROOT / "config" / "game.najamjad.json"),
+        private_path=str(ROOT / "config" / "najamjad" / "thief.toml"))
+    peer = ReferenceSeriesPeer(
+        natural_role=THIEF, config=cfg,
+        opponent_url="http://127.0.0.1:0/mcp",
+        my_port=0, num_games=6, mode="friendly",
+        spec_profile="najamjad", out_dir=str(tmp_path))
+    assert peer.my_windows[0] == 2, (
+        "fresh thief must offer window 2 first, never skip based on artifacts")
+    assert peer.my_windows == [2, 4, 6]
+
+
+def test_najamjad_friendly_cmd_does_not_loop():
+    """cmd_interop must NOT enter the reset/loop path for najamjad+friendly.
+    The NajAmjad split architecture requires the launcher to coordinate
+    series restarts; autonomous looping causes window-number mismatch when
+    NajAmjad restarts fresh (they see our process at window 3/4 instead of
+    1/2). Verified structurally: the loop-break must include najamjad."""
+    import inspect
+    from police_thief import cli_cmds
+    src = inspect.getsource(cli_cmds.cmd_interop)
+    assert 'spec_profile == "najamjad"' in src, (
+        "cmd_interop friendly loop must break for najamjad spec_profile")
+
+
+# =========================================================================
 # isolation — the other opponents' paths are untouched
 # =========================================================================
 def test_ahk_yosi_constitution_untouched():
