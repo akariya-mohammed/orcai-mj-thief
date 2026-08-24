@@ -225,15 +225,8 @@ def dispatch_report(body: dict[str, Any], out_dir: Path, mode: str,
     if sentinel.exists():
         return {"status": "duplicate_suppressed", "sentinel": str(sentinel),
                 "recipient": recipient}
-    artifact_paths: dict[str, Path] = {}
-    for role_dir in (cop_dir, thief_dir):
-        decl = role_dir / f"declaration_{game_id}.json"
-        if decl.exists() and "declaration" not in artifact_paths:
-            artifact_paths["declaration"] = decl
-        for pattern in (f"config_{game_id}_g*.json", f"log_{game_id}_g*.json"):
-            for path in sorted(role_dir.glob(pattern)):
-                artifact_paths.setdefault(path.stem, path)
     result_path = out_dir / f"result_{game_id}.json"
+    artifact_paths: dict[str, Path] = {}
     if result_path.exists():
         artifact_paths["result"] = result_path
     if sender_factory is None:
@@ -247,6 +240,49 @@ def dispatch_report(body: dict[str, Any], out_dir: Path, mode: str,
     sender.recipient = recipient           # explicit; never the config default
     sender.mode = "send"
     summary = {"game_id": game_id, "winner": body.get("series_winner")}
+    report = sender.send_series_report(artifact_paths, summary)
+    report["recipient"] = recipient
+    if report.get("status") == "sent":
+        sentinel.write_text(json.dumps(report, ensure_ascii=False),
+                            encoding="utf-8")
+    return report
+
+
+def send_corrective_friendly(result_path: str | Path, out_dir: str | Path,
+                              sender_factory=None) -> dict[str, Any]:
+    """Send a corrective friendly report attaching ONLY the result file.
+
+    Has its own sentinel so the original najamjad_report_sent_*.lock is
+    preserved. Does NOT alter the normal dispatch_report duplicate guard.
+    """
+    result_path = Path(result_path)
+    out_dir = Path(out_dir)
+    game_id = result_path.stem[len("result_"):]
+    sentinel = out_dir / f"najamjad_corrective_sent_{game_id}.lock"
+    if sentinel.exists():
+        return {"status": "duplicate_suppressed", "sentinel": str(sentinel)}
+    if os.environ.get("P2P_EMAIL_DISABLE") == "1":
+        return {"status": "suppressed (P2P_EMAIL_DISABLE=1)"}
+    artifact_paths: dict[str, Path] = {}
+    if result_path.exists():
+        artifact_paths["result"] = result_path
+    recipient = najamjad.FRIENDLY_RECIPIENT
+    if sender_factory is None:
+        from police_thief.infra.email_sender import GmailSender
+        from police_thief.shared.config import Config
+        config = Config.load(shared_path="config/game.najamjad.json",
+                             private_path="config/najamjad/police.toml")
+        sender = GmailSender(config)
+    else:
+        sender = sender_factory()
+    sender.recipient = recipient
+    sender.mode = "send"
+    summary = {
+        "game_id": f"[CORRECTED] {game_id}",
+        "winner": "najamjad",
+        "note": ("Prior email included unnecessary separate internal artifacts. "
+                 "This is the canonical single-file friendly report."),
+    }
     report = sender.send_series_report(artifact_paths, summary)
     report["recipient"] = recipient
     if report.get("status") == "sent":

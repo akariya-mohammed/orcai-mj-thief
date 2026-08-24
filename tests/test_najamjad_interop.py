@@ -989,6 +989,186 @@ def test_email_disable_env_suppresses_everything(tmp_path, monkeypatch):
 
 
 # =========================================================================
+# §7.4-attach — dispatch attaches ONLY result_<game_id>.json
+# =========================================================================
+
+class _CapturingSender:
+    """Like _FakeSender but records the artifact_paths dict for inspection."""
+    def __init__(self):
+        self.recipient = None
+        self.mode = None
+        self.captured_paths = None
+        self.sent = []
+
+    def send_series_report(self, paths, summary):
+        self.captured_paths = dict(paths)
+        self.sent.append((dict(paths), dict(summary)))
+        return {"status": "sent"}
+
+
+def _make_role_artifacts_with_extras(tmp_path, game_id=None):
+    """Role dirs populated with declaration, config, and log extras to verify
+    they are NOT attached by dispatch_report."""
+    gid = game_id or GOLDEN_GAME_ID
+    cop_dir = tmp_path / "cop-extras"
+    thief_dir = tmp_path / "thief-extras"
+    cop_dir.mkdir(exist_ok=True)
+    thief_dir.mkdir(exist_ok=True)
+    for d in (cop_dir, thief_dir):
+        (d / f"declaration_{gid}.json").write_text("{}", encoding="utf-8")
+        (d / f"config_{gid}_g01.json").write_text("{}", encoding="utf-8")
+        (d / f"log_{gid}_g01.json").write_text("{}", encoding="utf-8")
+    return cop_dir, thief_dir
+
+
+def _make_result_file(out_dir, game_id=None):
+    gid = game_id or GOLDEN_GAME_ID
+    out_dir.mkdir(exist_ok=True, parents=True)
+    result = out_dir / f"result_{gid}.json"
+    result.write_text("{}", encoding="utf-8")
+    return result
+
+
+def test_friendly_dispatch_attaches_exactly_one_file(tmp_path):
+    cop_dir, thief_dir = _make_role_artifacts_with_extras(tmp_path)
+    out_dir = tmp_path / "out1"
+    _make_result_file(out_dir)
+    cap = _CapturingSender()
+    R.dispatch_report(_result_stub(), out_dir, "friendly",
+                      cop_dir, thief_dir, sender_factory=lambda: cap)
+    assert len(cap.captured_paths) == 1
+
+
+def test_counted_dispatch_attaches_exactly_one_file(tmp_path):
+    cop_dir, thief_dir = _make_role_artifacts_with_extras(tmp_path)
+    out_dir = tmp_path / "out2"
+    _make_result_file(out_dir)
+    cap = _CapturingSender()
+    R.dispatch_report(_result_stub(), out_dir, "counted",
+                      cop_dir, thief_dir, sender_factory=lambda: cap)
+    assert len(cap.captured_paths) == 1
+
+
+def test_attachment_key_is_result_and_filename_matches_game_id(tmp_path):
+    cop_dir, thief_dir = _make_role_artifacts_with_extras(tmp_path)
+    out_dir = tmp_path / "out3"
+    _make_result_file(out_dir)
+    cap = _CapturingSender()
+    R.dispatch_report(_result_stub(), out_dir, "friendly",
+                      cop_dir, thief_dir, sender_factory=lambda: cap)
+    assert "result" in cap.captured_paths
+    assert cap.captured_paths["result"].name == f"result_{GOLDEN_GAME_ID}.json"
+
+
+def test_declaration_not_in_attachment_even_when_present(tmp_path):
+    cop_dir, thief_dir = _make_role_artifacts_with_extras(tmp_path)
+    out_dir = tmp_path / "out4"
+    _make_result_file(out_dir)
+    cap = _CapturingSender()
+    R.dispatch_report(_result_stub(), out_dir, "friendly",
+                      cop_dir, thief_dir, sender_factory=lambda: cap)
+    assert "declaration" not in cap.captured_paths
+
+
+def test_config_files_not_in_attachment_even_when_present(tmp_path):
+    cop_dir, thief_dir = _make_role_artifacts_with_extras(tmp_path)
+    out_dir = tmp_path / "out5"
+    _make_result_file(out_dir)
+    cap = _CapturingSender()
+    R.dispatch_report(_result_stub(), out_dir, "friendly",
+                      cop_dir, thief_dir, sender_factory=lambda: cap)
+    config_keys = [k for k in cap.captured_paths if k.startswith("config_")]
+    assert config_keys == []
+
+
+def test_log_files_not_in_attachment_even_when_present(tmp_path):
+    cop_dir, thief_dir = _make_role_artifacts_with_extras(tmp_path)
+    out_dir = tmp_path / "out6"
+    _make_result_file(out_dir)
+    cap = _CapturingSender()
+    R.dispatch_report(_result_stub(), out_dir, "friendly",
+                      cop_dir, thief_dir, sender_factory=lambda: cap)
+    log_keys = [k for k in cap.captured_paths if k.startswith("log_")]
+    assert log_keys == []
+
+
+def test_role_dir_artifacts_preserved_after_dispatch(tmp_path):
+    cop_dir, thief_dir = _make_role_artifacts_with_extras(tmp_path)
+    out_dir = tmp_path / "out7"
+    _make_result_file(out_dir)
+    cap = _CapturingSender()
+    R.dispatch_report(_result_stub(), out_dir, "friendly",
+                      cop_dir, thief_dir, sender_factory=lambda: cap)
+    for d in (cop_dir, thief_dir):
+        assert (d / f"declaration_{GOLDEN_GAME_ID}.json").exists()
+        assert (d / f"config_{GOLDEN_GAME_ID}_g01.json").exists()
+        assert (d / f"log_{GOLDEN_GAME_ID}_g01.json").exists()
+
+
+def test_friendly_single_attach_recipient_is_not_lecturer(tmp_path):
+    cop_dir, thief_dir = _make_role_artifacts_with_extras(tmp_path)
+    out_dir = tmp_path / "out8"
+    _make_result_file(out_dir)
+    cap = _CapturingSender()
+    report = R.dispatch_report(_result_stub(), out_dir, "friendly",
+                               cop_dir, thief_dir, sender_factory=lambda: cap)
+    assert report["recipient"] == NAJAMJAD_FRIENDLY_RECIPIENT
+    assert report["recipient"] != LEAGUE_ADDRESS
+    assert len(cap.captured_paths) == 1
+
+
+def test_counted_single_attach_recipient_is_lecturer(tmp_path):
+    cop_dir, thief_dir = _make_role_artifacts_with_extras(tmp_path)
+    out_dir = tmp_path / "out9"
+    _make_result_file(out_dir)
+    cap = _CapturingSender()
+    report = R.dispatch_report(_result_stub(), out_dir, "counted",
+                               cop_dir, thief_dir, sender_factory=lambda: cap)
+    assert report["recipient"] == LEAGUE_ADDRESS
+    assert len(cap.captured_paths) == 1
+
+
+def test_dispatch_sentinel_still_blocks_duplicate_with_single_attach(tmp_path):
+    out_dir = tmp_path / "out10"
+    _make_result_file(out_dir)
+    cap = _CapturingSender()
+    R.dispatch_report(_result_stub(), out_dir, "friendly",
+                      tmp_path, tmp_path, sender_factory=lambda: cap)
+    second = R.dispatch_report(_result_stub(), out_dir, "friendly",
+                               tmp_path, tmp_path, sender_factory=lambda: cap)
+    assert second["status"] == "duplicate_suppressed"
+    assert len(cap.sent) == 1
+
+
+def test_corrective_email_attaches_only_result_file(tmp_path):
+    out_dir = tmp_path / "out11"
+    result_path = _make_result_file(out_dir)
+    cap = _CapturingSender()
+    report = R.send_corrective_friendly(result_path, out_dir,
+                                        sender_factory=lambda: cap)
+    assert report["status"] == "sent"
+    assert len(cap.captured_paths) == 1
+    assert "result" in cap.captured_paths
+    assert cap.captured_paths["result"] == result_path
+
+
+def test_corrective_sentinel_independent_of_main_sentinel(tmp_path):
+    out_dir = tmp_path / "out12"
+    result_path = _make_result_file(out_dir)
+    cap = _CapturingSender()
+    main_sentinel = out_dir / f"najamjad_report_sent_{GOLDEN_GAME_ID}.lock"
+    main_sentinel.write_text("{}", encoding="utf-8")
+    report = R.send_corrective_friendly(result_path, out_dir,
+                                        sender_factory=lambda: cap)
+    assert report["status"] == "sent"
+    assert len(cap.sent) == 1
+    again = R.send_corrective_friendly(result_path, out_dir,
+                                       sender_factory=lambda: cap)
+    assert again["status"] == "duplicate_suppressed"
+    assert len(cap.sent) == 1
+
+
+# =========================================================================
 # isolation — the other opponents' paths are untouched
 # =========================================================================
 def test_ahk_yosi_constitution_untouched():
