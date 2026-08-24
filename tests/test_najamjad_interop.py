@@ -663,20 +663,98 @@ def test_mutual_digest_uses_the_spaced_default_separators():
     assert N.mutual_digest(doc) != compact       # never the compact form
 
 
-def test_tie_stays_raw_75_75_with_tie_award_field(tmp_path):
+#: NajAmjad's authoritative filed preimage (anrbj666 series) and its digest.
+ANRBJ_PREIMAGE = (
+    '{"aggregate": {"series_tie": true, "sub_games_won": {"anrbj666": 3, '
+    '"najamjad": 3}, "ties": 0, "total_score": {"anrbj666": 77, "najamjad": '
+    '77}, "winner_group": null}, "game_id": "anrbj666-vs-najamjad", '
+    '"sub_games": [{"result": "capture", "roles": {"anrbj666": "police", '
+    '"najamjad": "thief"}, "score": {"anrbj666": 20, "najamjad": 5}, '
+    '"sub_game_number": 1, "winner_group": "anrbj666"}, {"result": '
+    '"capture", "roles": {"anrbj666": "thief", "najamjad": "police"}, '
+    '"score": {"anrbj666": 5, "najamjad": 20}, "sub_game_number": 2, '
+    '"winner_group": "najamjad"}, {"result": "capture", "roles": '
+    '{"anrbj666": "police", "najamjad": "thief"}, "score": {"anrbj666": 20, '
+    '"najamjad": 5}, "sub_game_number": 3, "winner_group": "anrbj666"}, '
+    '{"result": "capture", "roles": {"anrbj666": "thief", "najamjad": '
+    '"police"}, "score": {"anrbj666": 5, "najamjad": 20}, "sub_game_number": '
+    '4, "winner_group": "najamjad"}, {"result": "capture", "roles": '
+    '{"anrbj666": "police", "najamjad": "thief"}, "score": {"anrbj666": 20, '
+    '"najamjad": 5}, "sub_game_number": 5, "winner_group": "anrbj666"}, '
+    '{"result": "capture", "roles": {"anrbj666": "thief", "najamjad": '
+    '"police"}, "score": {"anrbj666": 5, "najamjad": 20}, "sub_game_number": '
+    '6, "winner_group": "najamjad"}]}')
+ANRBJ_DIGEST = \
+    "a3645e1f1f554cce75cf419ebe089efa8e93ccd5af1c87b22d5c3f5d8529b597"
+
+
+def _anrbj_rows():
+    """The anrbj666 series as OUR internal rows, from anrbj666's perspective:
+    anrbj666 is police (and captures) on 1/3/5, najamjad on 2/4/6."""
+    rows = []
+    for n in (1, 3, 5):
+        rows.append(_mk_row(n, POLICE, "capture", POLICE, "a" * 40, 20, 5))
+    for n in (2, 4, 6):
+        rows.append(_mk_row(n, THIEF, "capture", POLICE, "a" * 40, 20, 5))
+    return rows
+
+
+def test_golden_anrbj666_preimage_and_digest_through_our_builder():
+    """NajAmjad's real filed example must reproduce byte-for-byte and
+    hash-for-hash through OUR real builder + digest function."""
+    doc = N.build_mutual_doc(
+        "anrbj666-vs-najamjad",
+        N.group_rows(_anrbj_rows(), "anrbj666", "najamjad"),
+        "anrbj666", "najamjad")
+    preimage = json.dumps(doc, sort_keys=True, ensure_ascii=False)
+    assert preimage == ANRBJ_PREIMAGE            # byte-for-byte, spaced form
+    assert N.mutual_digest(doc) == ANRBJ_DIGEST
+    assert hashlib.sha256(preimage.encode("utf-8")).hexdigest() == ANRBJ_DIGEST
+
+
+def test_tie_raw_75_signed_77_no_tie_award_key(tmp_path):
+    """Clean 3-3 capture tie: raw sum is 75-75, the SIGNED total_score folds
+    the +2 award in (77-77), and tie_award is NOT a signed aggregate key."""
     peer = make_peer(tmp_path)
-    doc = N.build_mutual_doc(GOLDEN_GAME_ID,
-                             peer._najamjad_group_rows(_tie_rows()),
-                             "orcai-mj", "najamjad")
+    grouped = peer._najamjad_group_rows(_tie_rows())
+    raw = {"orcai-mj": 0, "najamjad": 0}
+    for cr in grouped:
+        for group, score in cr["score"].items():
+            raw[group] += score
+    assert raw == {"orcai-mj": 75, "najamjad": 75}        # raw sub-game sum
+    doc = N.build_mutual_doc(GOLDEN_GAME_ID, grouped, "orcai-mj", "najamjad")
     aggregate = doc["aggregate"]
-    assert aggregate["total_score"] == {"orcai-mj": 75, "najamjad": 75}  # NOT 77
+    assert aggregate["total_score"] == {"orcai-mj": 77, "najamjad": 77}
     assert aggregate["winner_group"] is None
     assert aggregate["series_tie"] is True
-    assert aggregate["tie_award"] == 2
     assert aggregate["sub_games_won"] == {"orcai-mj": 3, "najamjad": 3}
+    assert aggregate["ties"] == 0
+    assert "tie_award" not in aggregate
+    assert set(aggregate) == {"series_tie", "sub_games_won", "ties",
+                              "total_score", "winner_group"}
 
 
-def test_non_tie_has_winner_and_no_tie_award(tmp_path):
+def test_signed_preimage_shape_is_exact():
+    """Aggregate: exactly five keys. Rows: exactly five keys. Top level:
+    exactly three keys. game_uid and every other report field excluded."""
+    doc = N.build_mutual_doc(
+        "anrbj666-vs-najamjad",
+        N.group_rows(_anrbj_rows(), "anrbj666", "najamjad"),
+        "anrbj666", "najamjad")
+    assert set(doc) == {"game_id", "aggregate", "sub_games"}
+    assert set(doc["aggregate"]) == {"series_tie", "sub_games_won", "ties",
+                                     "total_score", "winner_group"}
+    for row in doc["sub_games"]:
+        assert set(row) == {"result", "roles", "score", "sub_game_number",
+                            "winner_group"}
+    text = json.dumps(doc, sort_keys=True, ensure_ascii=False)
+    for banned in ("game_uid", "tie_award", "github_commit", "steps",
+                   "timestamp", "tokens", "audit", "log_files"):
+        assert banned not in text
+    assert '"total_score": {' in text            # spaced/default separators
+
+
+def test_non_tie_totals_unaffected_and_no_award(tmp_path):
     peer = make_peer(tmp_path)
     rows = _tie_rows()
     rows[5] = _mk_row(6, THIEF, "survival", THIEF, "b" * 40, 5, 10)  # we survive
@@ -685,6 +763,7 @@ def test_non_tie_has_winner_and_no_tie_award(tmp_path):
     aggregate = doc["aggregate"]
     assert aggregate["series_tie"] is False
     assert aggregate["winner_group"] == "orcai-mj"
+    assert aggregate["total_score"] == {"orcai-mj": 80, "najamjad": 60}  # raw
     assert "tie_award" not in aggregate
 
 
@@ -765,8 +844,10 @@ def test_aggregator_merges_two_finalized_sets(tmp_path):
                        2: "b" * 40, 4: "b" * 40, 6: "b" * 40}
     assert body["num_sub_games"] == 6
     assert body["final_result"]["total_score"] == \
-        {"orcai-mj": 75, "najamjad": 75}
-    assert body["final_result"]["tie_award"] == 2
+        {"orcai-mj": 77, "najamjad": 77}           # SIGNED totals (award in)
+    assert body["final_result"]["raw_total_score"] == \
+        {"orcai-mj": 75, "najamjad": 75}           # display only
+    assert body["final_result"]["tie_award"] == 2  # display only, outside preimage
     expected_rows = sorted(_tie_rows(), key=lambda r: r["index"])
     assert body["mutual_agreement"]["sha256"] == N.mutual_digest(
         N.build_mutual_doc(GOLDEN_GAME_ID,

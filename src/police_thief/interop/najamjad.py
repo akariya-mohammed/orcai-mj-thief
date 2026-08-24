@@ -323,11 +323,17 @@ def build_mutual_doc(game_id: str, rows: list[dict[str, Any]],
 
     ``rows`` are five-key consensus rows (sub_game_number, result, roles,
     score, winner_group) with roles/score keyed BY GROUP ID. No game_uid, no
-    groups, no timestamps, no tokens, no paths, no steps, no audit metadata.
+    groups, no timestamps, no tokens, no commits, no paths, no steps, no
+    audit metadata — those live in the wider report, never in this preimage.
 
-    Tie rule: ``total_score`` stays the raw sub-game sum (75-75 stays 75-75),
-    ``winner_group`` is None, ``series_tie`` is true and ``tie_award`` is its
-    own aggregate field — NEVER added into the totals.
+    Tie rule (pinned by NajAmjad's authoritative filed example, digest
+    ``a3645e1f…``): on an equal raw sum, the book's +2 series-tie award is
+    ADDED INTO ``aggregate.total_score`` for BOTH teams — a clean 3-3 of
+    captures sums 75-75 raw and is SIGNED as 77-77 — with ``winner_group``
+    null and ``series_tie`` true. The aggregate carries EXACTLY five keys
+    (series_tie, sub_games_won, ties, total_score, winner_group); there is
+    no ``tie_award`` key inside the signed preimage. Any raw-sum display
+    belongs outside this object.
     """
     ordered = sorted((dict(r) for r in rows),
                      key=lambda r: r["sub_game_number"])
@@ -343,16 +349,17 @@ def build_mutual_doc(game_id: str, rows: list[dict[str, Any]],
         elif winner in wins:
             wins[winner] += 1
     series_tie = total[our_group] == total[their_group]
+    winner_group = None if series_tie else max(total, key=lambda g: total[g])
+    if series_tie:
+        for group in total:
+            total[group] += tie_award       # signed INSIDE total_score (77-77)
     aggregate: dict[str, Any] = {
-        "total_score": dict(total),                 # RAW sums, tie or not
+        "total_score": dict(total),
         "sub_games_won": dict(wins),
         "ties": ties,
-        "winner_group": (None if series_tie else
-                         max(total, key=lambda g: total[g])),
+        "winner_group": winner_group,
         "series_tie": series_tie,
     }
-    if series_tie:
-        aggregate["tie_award"] = tie_award          # separate field, never summed in
     return {"game_id": game_id, "aggregate": aggregate, "sub_games": ordered}
 
 

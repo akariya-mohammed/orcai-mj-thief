@@ -137,6 +137,13 @@ def build_team_result(series: dict[str, Any], mode: str,
     mutual_doc = najamjad.build_mutual_doc(game_id, grouped, our_group,
                                            their_group, tie_award=tie_award)
     aggregate = mutual_doc["aggregate"]
+    # Display-only raw sub-game sums (75-75 on a clean tie). The SIGNED
+    # total_score already folds the +2 series-tie award in (77-77, per
+    # NajAmjad's filed golden example) — raw figures never enter the preimage.
+    raw_total: dict[str, int] = {our_group: 0, their_group: 0}
+    for cr in grouped:
+        for group, score in cr["score"].items():
+            raw_total[group] = raw_total.get(group, 0) + score
     sub_games_report = [
         najamjad.row_report(row, cr, our_group, their_group, game_id)
         for row, cr in zip(rows, grouped)]
@@ -169,7 +176,11 @@ def build_team_result(series: dict[str, Any], mode: str,
                              " — default spaced separators",
             "confirmed": False,
         },
-        "final_result": dict(aggregate) | {"tokens_total_series": 0},
+        "final_result": dict(aggregate) | {
+            "raw_total_score": raw_total,      # display only — NOT signed
+            "tie_award": (tie_award if aggregate["series_tie"] else 0),
+            "tokens_total_series": 0,
+        },
         "dialect": "najamjad",
         "spec_profile": "najamjad",
         "match_mode": ("FRIENDLY (UNCOUNTED)" if mode == "friendly"
