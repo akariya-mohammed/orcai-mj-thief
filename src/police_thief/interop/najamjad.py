@@ -77,6 +77,20 @@ REOFFER_LIMIT = 3          # bounded same-number re-offers of a failed window
 
 BUSY_ERROR = "a mini-game is in progress; re-send this handshake at the boundary"
 
+#: Fields that NajAmjad's declaration schema requires to be numeric (or absent).
+_NUMERIC_HW_FIELDS = frozenset({"cpu_freq_mhz", "vram_gb", "ram_gb"})
+
+
+def sanitize_hardware_spec(spec: dict) -> dict:
+    """Strip 'unknown' from numeric-only hardware fields (NajAmjad schema §8).
+
+    cpu_freq_mhz and vram_gb must be numeric or omitted — the stdlib exposes
+    no portable frequency probe and no GPU is installed on this machine.
+    String fields (os, cpu_type, gpu_type, gpu_cores_or_cuda) are kept as-is.
+    """
+    return {k: v for k, v in spec.items()
+            if not (k in _NUMERIC_HW_FIELDS and v == "unknown")}
+
 
 # -- signed terms -------------------------------------------------------------
 def terms_sha256(terms: dict[str, Any]) -> str:

@@ -959,12 +959,14 @@ def test_counted_report_goes_to_the_lecturer_once(tmp_path):
     fake = _FakeSender()
     report = R.dispatch_report(_result_stub(), tmp_path, "counted",
                                tmp_path, tmp_path,
-                               sender_factory=lambda: fake)
+                               sender_factory=lambda: fake,
+                               digest_confirmed=True)
     assert report["recipient"] == LEAGUE_ADDRESS
     assert report["status"] == "sent"
     again = R.dispatch_report(_result_stub(), tmp_path, "counted",
                               tmp_path, tmp_path,
-                              sender_factory=lambda: fake)
+                              sender_factory=lambda: fake,
+                              digest_confirmed=True)
     assert again["status"] == "duplicate_suppressed"       # sentinel guard
     assert len(fake.sent) == 1
 
@@ -1045,7 +1047,8 @@ def test_counted_dispatch_attaches_exactly_one_file(tmp_path):
     _make_result_file(out_dir)
     cap = _CapturingSender()
     R.dispatch_report(_result_stub(), out_dir, "counted",
-                      cop_dir, thief_dir, sender_factory=lambda: cap)
+                      cop_dir, thief_dir, sender_factory=lambda: cap,
+                      digest_confirmed=True)
     assert len(cap.captured_paths) == 1
 
 
@@ -1123,7 +1126,8 @@ def test_counted_single_attach_recipient_is_lecturer(tmp_path):
     _make_result_file(out_dir)
     cap = _CapturingSender()
     report = R.dispatch_report(_result_stub(), out_dir, "counted",
-                               cop_dir, thief_dir, sender_factory=lambda: cap)
+                               cop_dir, thief_dir, sender_factory=lambda: cap,
+                               digest_confirmed=True)
     assert report["recipient"] == LEAGUE_ADDRESS
     assert len(cap.captured_paths) == 1
 
@@ -1166,6 +1170,102 @@ def test_corrective_sentinel_independent_of_main_sentinel(tmp_path):
                                        sender_factory=lambda: cap)
     assert again["status"] == "duplicate_suppressed"
     assert len(cap.sent) == 1
+
+
+# =========================================================================
+# §7.5 — counted pre-flight: digest confirmation gate, prior games, hw spec
+# =========================================================================
+
+def test_counted_dispatch_blocked_without_digest_confirmation(tmp_path):
+    """Counted email must NOT send until digest_confirmed=True is passed."""
+    fake = _FakeSender()
+    report = R.dispatch_report(_result_stub(), tmp_path, "counted",
+                               tmp_path, tmp_path,
+                               sender_factory=lambda: fake)
+    assert "digest" in report["status"].lower()
+    assert report["status"].startswith("suppressed")
+    assert not fake.sent
+
+
+def test_counted_dispatch_sends_with_digest_confirmed(tmp_path):
+    """Counted email sends only when digest_confirmed=True is explicit."""
+    fake = _FakeSender()
+    report = R.dispatch_report(_result_stub(), tmp_path, "counted",
+                               tmp_path, tmp_path,
+                               sender_factory=lambda: fake,
+                               digest_confirmed=True)
+    assert report["status"] == "sent"
+    assert len(fake.sent) == 1
+
+
+def test_friendly_dispatch_unaffected_by_digest_confirmed(tmp_path):
+    """Friendly path has no digest_confirmed gate — it always proceeds."""
+    fake = _FakeSender()
+    report = R.dispatch_report(_result_stub(), tmp_path, "friendly",
+                               tmp_path, tmp_path,
+                               sender_factory=lambda: fake)
+    assert report["status"] == "sent"
+    assert len(fake.sent) == 1
+
+
+def test_wire_identity_contains_counted_games_played(tmp_path):
+    """The najamjad identity block carries counted_games_played = 2."""
+    from police_thief.interop.series import ReferenceSeriesPeer, POLICE
+    from police_thief.shared.config import Config
+    cfg = Config.load(
+        shared_path=str(ROOT / "config" / "game.najamjad.json"),
+        private_path=str(ROOT / "config" / "najamjad" / "thief.toml"))
+    peer = ReferenceSeriesPeer(
+        natural_role=POLICE, config=cfg,
+        opponent_url="http://127.0.0.1:19999/mcp",
+        my_port=19998, num_games=6, mode="counted",
+        spec_profile="najamjad", prior_counted_games=2,
+        mcp_url="http://127.0.0.1:19998/mcp")
+    assert peer.identity["counted_games_played"] == 2
+    assert peer.identity["prior_counted_games"] == 2
+
+
+def test_sanitize_hardware_spec_removes_unknown_numeric_fields():
+    """cpu_freq_mhz and vram_gb set to 'unknown' must be stripped."""
+    from police_thief.interop.najamjad import sanitize_hardware_spec
+    raw = {
+        "os": "Windows 11",
+        "cpu_type": "Intel i5",
+        "cpu_cores": 8,
+        "cpu_freq_mhz": "unknown",
+        "ram_gb": 8.2,
+        "gpu_type": "unknown",
+        "gpu_cores_or_cuda": "unknown",
+        "vram_gb": "unknown",
+    }
+    clean = sanitize_hardware_spec(raw)
+    assert "cpu_freq_mhz" not in clean
+    assert "vram_gb" not in clean
+    assert clean["cpu_type"] == "Intel i5"
+    assert clean["cpu_cores"] == 8
+    assert clean["ram_gb"] == 8.2
+    assert clean["gpu_type"] == "unknown"      # string field — kept as-is
+
+
+def test_najamjad_wire_identity_has_no_unknown_in_numeric_hw_fields(tmp_path):
+    """The identity built for najamjad profile must not emit 'unknown' for
+    cpu_freq_mhz or vram_gb — those are numeric-only fields in their schema."""
+    from police_thief.interop.series import ReferenceSeriesPeer, POLICE
+    from police_thief.shared.config import Config
+    cfg = Config.load(
+        shared_path=str(ROOT / "config" / "game.najamjad.json"),
+        private_path=str(ROOT / "config" / "najamjad" / "thief.toml"))
+    peer = ReferenceSeriesPeer(
+        natural_role=POLICE, config=cfg,
+        opponent_url="http://127.0.0.1:19997/mcp",
+        my_port=19996, num_games=6, mode="counted",
+        spec_profile="najamjad", prior_counted_games=2,
+        mcp_url="http://127.0.0.1:19996/mcp")
+    hw = peer.identity.get("spec", {})
+    assert hw.get("cpu_freq_mhz") != "unknown", "cpu_freq_mhz must be numeric or absent"
+    assert hw.get("vram_gb") != "unknown", "vram_gb must be numeric or absent"
+    assert "cpu_freq_mhz" not in hw or isinstance(hw["cpu_freq_mhz"], (int, float))
+    assert "vram_gb" not in hw or isinstance(hw["vram_gb"], (int, float))
 
 
 # =========================================================================

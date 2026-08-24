@@ -396,6 +396,8 @@ class ReferenceSeriesPeer:
         if spec_profile in ("amireman", "najamjad"):
             from police_thief.shared.sysinfo import detailed_hardware_spec
             hw = detailed_hardware_spec()
+        if spec_profile == "najamjad" and hw is not None:
+            hw = najamjad_mod.sanitize_hardware_spec(hw)
         # -- NajAmjad split-process mode (their §3) --------------------------
         # This process plays ONLY its repo's fixed role: cop repo -> police
         # windows against their thief door, thief repo -> thief windows
@@ -433,6 +435,9 @@ class ReferenceSeriesPeer:
                 if net.get(cfg_key):
                     servers[key] = net[cfg_key]
             self.identity["mcp_servers"] = servers
+            # NajAmjad wire field for counted game history (their §6 / §9.8).
+            # Value = number of counted series completed BEFORE this one.
+            self.identity["counted_games_played"] = prior_counted_games
         self.their_identity: dict = {}
         self.rows: list[dict] = []
         self.mutual_agreement: dict = {}   # spec-profile series consensus outcome
@@ -860,7 +865,12 @@ class ReferenceSeriesPeer:
 
     def _write_declaration(self) -> None:
         """Write declaration_{game_id}.json before the first sub-game."""
-        from police_thief.shared.sysinfo import hardware_spec as get_hw
+        if self.spec_profile == "najamjad":
+            from police_thief.shared.sysinfo import detailed_hardware_spec as _hw_fn
+            our_hw = najamjad_mod.sanitize_hardware_spec(_hw_fn())
+        else:
+            from police_thief.shared.sysinfo import hardware_spec as _hw_fn
+            our_hw = _hw_fn()
         our_id = self.identity
         their_id = self.their_identity
         declaration = {
@@ -884,7 +894,7 @@ class ReferenceSeriesPeer:
                     "repos": our_id.get("repos", {}),
                     "mcp_servers": our_id.get("mcp_servers", {}),
                     "llm_model": our_id.get("llm_model", "template"),
-                    "hardware_spec": get_hw(),
+                    "hardware_spec": our_hw,
                 },
                 "group_2": {
                     "group_id": their_id.get("group_id", ""),
@@ -1564,7 +1574,8 @@ class ReferenceSeriesPeer:
                     "repos": self.identity.get("repos", {}),
                     "mcp_servers": self.identity.get("mcp_servers", {}),
                     "llm_model": self.identity.get("llm_model", ""),
-                    "hardware_spec": get_hw(),
+                    "hardware_spec": najamjad_mod.sanitize_hardware_spec(get_hw()),
+                    "counted_games_played": self.identity.get("counted_games_played", 0),
                 },
                 their_group: {
                     "group_id": their_group,

@@ -203,12 +203,17 @@ def build_team_result(series: dict[str, Any], mode: str,
 
 def dispatch_report(body: dict[str, Any], out_dir: Path, mode: str,
                     cop_dir: Path, thief_dir: Path,
-                    sender_factory=None) -> dict[str, Any]:
+                    sender_factory=None,
+                    digest_confirmed: bool = False) -> dict[str, Any]:
     """The ONE email dispatch path for the NajAmjad profile (their §7.4).
 
     counted -> the lecturer, from our team separately; friendly -> the team
     only, NEVER the lecturer. One email per completed series (sentinel).
     Attachments are read from the two role directories READ-ONLY.
+
+    For counted mode the caller MUST pass digest_confirmed=True after both
+    operators have compared the mutual SHA256 digit-for-digit with NajAmjad.
+    This prevents the lecturer email from going out before the comparison step.
     """
     from police_thief.infra.email_sender import LEAGUE_ADDRESS
     game_id = body.get("game_id", "najamjad-series")
@@ -220,6 +225,11 @@ def dispatch_report(body: dict[str, Any], out_dir: Path, mode: str,
     if mode == "counted" and not body.get("all_audits_verified"):
         return {"status": "suppressed (audit failures — all audits must pass "
                           "before the lecturer is mailed)",
+                "recipient": recipient}
+    if mode == "counted" and not digest_confirmed:
+        return {"status": "suppressed (counted dispatch requires explicit digest "
+                          "confirmation — call with digest_confirmed=True after "
+                          "both operators have verified the mutual SHA256)",
                 "recipient": recipient}
     sentinel = out_dir / f"najamjad_report_sent_{game_id}.lock"
     if sentinel.exists():
@@ -294,6 +304,7 @@ def send_corrective_friendly(result_path: str | Path, out_dir: str | Path,
 def aggregate(cop_dir: str | Path, thief_dir: str | Path,
               out_dir: str | Path, mode: str, num_games: int = 6,
               tie_award: int = 2, sender_factory=None,
+              digest_confirmed: bool = False,
               log=print) -> dict[str, Any]:
     """Full post-match step: validate, merge, write ONE team result, dispatch.
 
@@ -315,7 +326,8 @@ def aggregate(cop_dir: str | Path, thief_dir: str | Path,
     result_path.write_text(json.dumps(body, indent=2, ensure_ascii=False),
                            encoding="utf-8")
     report = dispatch_report(body, out_dir, mode, cop_dir, thief_dir,
-                             sender_factory=sender_factory)
+                             sender_factory=sender_factory,
+                             digest_confirmed=digest_confirmed)
     body["report_status"] = report
     log(f"[najamjad-report] team result -> {result_path.name} "
         f"winner={body['series_winner']} "

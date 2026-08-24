@@ -77,6 +77,11 @@ def main(argv: list[str] | None = None) -> int:
                                 "game_uid is still derived and never overridden")
     p_interop.add_argument("--mcp-url", default=None,
                            help="our public /mcp URL, for the identity block")
+    p_interop.add_argument("--prior-counted-games", type=int, default=0,
+                           help="number of counted series completed BEFORE this one; "
+                                "emitted as counted_games_played in our wire identity "
+                                "(najamjad profile). Set to 2 for the NajAmjad counted "
+                                "series (ahk-yosi + amireman = 2 prior counted games).")
 
     p_najrep = sub.add_parser(
         "najamjad-report",

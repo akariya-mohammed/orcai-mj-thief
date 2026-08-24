@@ -104,7 +104,8 @@ def cmd_interop(args) -> int:
         mcp_url=args.mcp_url, spec_profile=spec_profile,
         git_commit_hash=getattr(args, "git_commit", ""),
         game_id_override=getattr(args, "game_id", None),
-        first_window_role=getattr(args, "first_window_role", "police"))
+        first_window_role=getattr(args, "first_window_role", "police"),
+        prior_counted_games=getattr(args, "prior_counted_games", 0))
     peer.start_server()
     import time as _time
     while True:
@@ -165,7 +166,8 @@ def cmd_najamjad_report(args) -> int:
                   "(run: police-thief authorize)")
             return 2
     outcome = aggregate(args.cop_dir, args.thief_dir, args.out,
-                        mode=args.mode, num_games=args.games)
+                        mode=args.mode, num_games=args.games,
+                        digest_confirmed=(os.environ.get("P2P_DIGEST_CONFIRMED") == "YES"))
     print(json.dumps({
         "status": outcome["status"],
         "reason": outcome.get("reason", ""),
